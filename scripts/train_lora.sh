@@ -26,10 +26,7 @@ do
    fi
 done
 
-# First create the masks for RoSA finetuning.
-composer ../src/panza/finetuning/train.py \
-    finetuning=rosa finetuning.rosa.masks_only=true ${vars[@]}
 
 # Then train the weights.
 composer ../src/panza/finetuning/train.py \
-    finetuning=rosa finetuning.rosa.masks_only=false ${vars[@]}
+    finetuning=lora ${vars[@]}
