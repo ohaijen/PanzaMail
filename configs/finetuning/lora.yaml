@@ -4,10 +4,12 @@ defaults:
 max_duration: 5ep
 lr: 1e-5
 batch_size: 8
-eval_interval: 1
+train_batch_size: 8
+device_train_microbatch_size: 1
+eval_interval: 8
 seed: ${seed}
 model_name_or_path: "ISTA-DASLab/Meta-Llama-3-8B-Instruct"
-save_merged_model: False
+save_merged_model: True
 
 lora:
   lr: ${finetuning.lr}
@@ -21,6 +23,7 @@ lora:
   schedule: #TODO
 
 scheduler:
+  #constant_with_warmup, cosine_with_warmup, inv_sqrt_with_warmup, linear_decay_with_warmup
   t_warmup: 8ba
 
 num_cpu_threads: 1
