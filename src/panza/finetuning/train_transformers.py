@@ -22,6 +22,7 @@ from datasets import disable_caching
 from omegaconf import DictConfig, ListConfig
 from omegaconf import OmegaConf as om
 
+
 def pop_config(cfg, key, must_exist=False, default_value=None, convert=False):
     if key in cfg:
         val = cfg.pop(key)
@@ -32,14 +33,18 @@ def pop_config(cfg, key, must_exist=False, default_value=None, convert=False):
         raise KeyError(f"Required config key {key} not found")
     return default_value
 
+
 def update_batch_size_info(cfg):
     # noop placeholder
     return cfg
 
+
 def process_init_device(model_config, fsdp_config):
     # no special FSDP context needed for HF Trainer
     from contextlib import nullcontext
+
     return nullcontext()
+
 
 from peft import get_peft_model, LoraConfig
 from rich.traceback import install
@@ -56,30 +61,38 @@ ffns_with_megablocks = []
 # stub tokenizer builder
 from transformers import AutoTokenizer
 
+
 def build_tokenizer(name, kwargs):
     tokenizer = AutoTokenizer.from_pretrained(name, **kwargs)
     tokenizer.pad_token = tokenizer.eos_token
     return tokenizer
 
+
 def build_logger(name, cfg):
     return logging.getLogger(name)
+
 
 def build_callback(name, cfg, logged_cfg):
     return None
 
+
 # provide simplified logging util stub
+
 
 def log_config(cfg):
     logging.info(f"Config:\n{OmegaConf.to_yaml(cfg)}")
 
+
 # simple dynamic import
 import importlib.util
+
 
 def import_file(path):
     spec = importlib.util.spec_from_file_location(Path(path).stem, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -329,6 +342,7 @@ def validate_config(cfg: DictConfig):
                 f"MoEs with expert parallelism (moe_world_size {moe_world_size} > 1) require `use_orig_params=True`."
             )
 
+
 def _load_and_prepare_dataset(
     loader_cfg: DictConfig,
     tokenizer,
@@ -356,6 +370,7 @@ def _load_and_prepare_dataset(
     max_len = ds_conf.get("max_seq_len", None)
     if max_len is None:
         max_len = global_max_len
+
     def tokenize_fn(example):
         prompt = example.get("prompt", "")
         response = example.get("response", "")
@@ -380,6 +395,7 @@ def _load_and_prepare_dataset(
             "attention_mask": attention_mask,
             "labels": labels,
         }
+
     # Preserve one dataset row as one training example.
     dataset = dataset.map(tokenize_fn, batched=False, remove_columns=dataset.column_names)
     if is_train and ds_conf.get("shuffle", True):
@@ -387,7 +403,9 @@ def _load_and_prepare_dataset(
     return dataset
 
 
-def _make_dataloader(dataset, tokenizer, batch_size: int, is_train: bool = True, loader_cfg: DictConfig = None):
+def _make_dataloader(
+    dataset, tokenizer, batch_size: int, is_train: bool = True, loader_cfg: DictConfig = None
+):
     def collator(features):
         token_features = []
         for feature in features:
@@ -427,7 +445,13 @@ def _make_dataloader(dataset, tokenizer, batch_size: int, is_train: bool = True,
     extra = {}
     if loader_cfg is not None:
         # pass through supported dataloader args
-        for arg in ["num_workers", "pin_memory", "prefetch_factor", "persistent_workers", "drop_last"]:
+        for arg in [
+            "num_workers",
+            "pin_memory",
+            "prefetch_factor",
+            "persistent_workers",
+            "drop_last",
+        ]:
             if arg in loader_cfg:
                 extra[arg] = loader_cfg[arg]
     return DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collator, **extra)
@@ -575,7 +599,7 @@ def build_hf_peft_model(
         torch_dtype=compute_dtype,
         quantization_config=quant_config,
         trust_remote_code=True,
-        #use_auth_token=True,
+        # use_auth_token=True,
         use_cache=False,
         attn_implementation="eager",
     )
@@ -782,7 +806,7 @@ def main(cfg: DictConfig) -> HfTrainer:
         cfg, "save_num_checkpoints_to_keep", must_exist=False, default_value=-1
     )
     progress_bar = pop_config(cfg, "progress_bar", must_exist=False, default_value=False)
-    #log_to_console: bool = pop_config(cfg, "log_to_console", must_exist=False, default_value=True)
+    # log_to_console: bool = pop_config(cfg, "log_to_console", must_exist=False, default_value=True)
     python_log_level: Optional[str] = pop_config(
         cfg, "python_log_level", must_exist=False, default_value="debug"
     )
@@ -897,14 +921,12 @@ def main(cfg: DictConfig) -> HfTrainer:
     # (scheduler_config remains available if needed for custom logic)
 
     # loggers and callbacks are not supported in this simplified version
-    #loggers = []
-    #mosaicml_logger = None
+    # loggers = []
+    # mosaicml_logger = None
     # metadata logging skipped
-
 
     # # Callbacks not implemented; ignore configs
     # callbacks: List[Any] = []
-
 
     print("LORA CONFIG", lora_config)
     # Build Model
@@ -913,7 +935,6 @@ def main(cfg: DictConfig) -> HfTrainer:
         model = build_hf_peft_model(
             model_config, lora_config, tokenizer, is_fsdp=fsdp_config is not None
         )
-
 
     # Dataloaders
     log.info("Building train dataset and loader...")
@@ -926,12 +947,11 @@ def main(cfg: DictConfig) -> HfTrainer:
             global_max_len=max_seq_len,
         )
         # optional: create PyTorch DataLoader if desired for debugging
-            
+
     except Exception as e:
         # if mosaicml_logger is not None:
         #     mosaicml_logger.log_exception(e)
         raise e
-    
 
     # do not remove - debugging code to check the data.
     # train_loader = _make_dataloader(train_dataset, tokenizer, 2, is_train=True, loader_cfg=train_loader_config)
@@ -990,15 +1010,15 @@ def main(cfg: DictConfig) -> HfTrainer:
     optimizer_name: str = optimizer_config.pop("name")
     opt_kwargs = dict(optimizer_config)
     base_lr = opt_kwargs.pop("lr", 5e-5)
-    
+
     log.info(f"Optimizer: {optimizer_name}")
     log.info(f"Optimizer kwargs: {opt_kwargs}")
-    
+
     # Map optimizer name to HF format (e.g., "decoupled_adamw" -> "adamw_torch")
     optim_type = "adamw_torch"
     if "adamw" in optimizer_name.lower() or "adam" in optimizer_name.lower():
         optim_type = "adamw_torch"
-    
+
     # Create custom optimizer with LoRA parameter groups if needed
     custom_optimizer = None
     if lora_config and "lora_lr" in lora_config:
@@ -1010,13 +1030,13 @@ def main(cfg: DictConfig) -> HfTrainer:
                 lora_params.append(param)
             else:
                 other_params.append(param)
-        
+
         param_groups = []
         if other_params:
             param_groups.append({"params": other_params, "lr": base_lr})
         if lora_params:
             param_groups.append({"params": lora_params, "lr": lora_config["lora_lr"]})
-        
+
         # Create optimizer with parameter groups
         custom_optimizer = torch.optim.AdamW(param_groups, **opt_kwargs)
 
@@ -1047,7 +1067,7 @@ def main(cfg: DictConfig) -> HfTrainer:
         if isinstance(val, int):
             return val
         if isinstance(val, str):
-            digits = ''.join(ch for ch in val if ch.isdigit())
+            digits = "".join(ch for ch in val if ch.isdigit())
             return int(digits) if digits else None
         return None
 
@@ -1069,8 +1089,9 @@ def main(cfg: DictConfig) -> HfTrainer:
             # gradient_accumulation_steps = batch_size / microbatch_size
             gradient_accumulation_steps = max(1, train_batch_size // device_train_microbatch_size)
             if gradient_accumulation_steps > 1:
-                log.info(f"Using gradient accumulation: {gradient_accumulation_steps} steps (batch_size={train_batch_size}, microbatch_size={device_train_microbatch_size})")
-
+                log.info(
+                    f"Using gradient accumulation: {gradient_accumulation_steps} steps (batch_size={train_batch_size}, microbatch_size={device_train_microbatch_size})"
+                )
 
     per_device_train_batch_size = (
         device_train_microbatch_size
@@ -1110,13 +1131,15 @@ def main(cfg: DictConfig) -> HfTrainer:
         "adam_epsilon": opt_kwargs.get("eps", 1e-8),
         "optim": optim_type,
         "logging_steps": _parse_int(console_log_interval) or 1,
-        "save_steps": _parse_int(save_interval),
-        #"evaluation_strategy": "steps" if eval_dataset is not None else "no",
+        # Disable Trainer checkpointing (optimizer/scheduler/FSDP artifacts).
+        # We save only the final runnable model explicitly after training.
+        "save_strategy": "no",
+        "save_only_model": True,
+        # "evaluation_strategy": "steps" if eval_dataset is not None else "no",
         "eval_steps": _parse_int(eval_interval),
         "fp16": "fp16" in precision,
         "bf16": "bf16" in precision,
         "gradient_accumulation_steps": gradient_accumulation_steps,
-        "save_total_limit": save_num_checkpoints_to_keep if save_num_checkpoints_to_keep > 0 else None,
         "seed": seed,
         "disable_tqdm": not progress_bar,
         "warmup_steps": _parse_int(sched_kwargs.get("t_warmup", 0)) or 0,
@@ -1132,7 +1155,9 @@ def main(cfg: DictConfig) -> HfTrainer:
     if max_steps is not None:
         training_args_kwargs["max_steps"] = max_steps
 
-    training_args = TrainingArguments(**{k: v for k, v in training_args_kwargs.items() if v is not None})
+    training_args = TrainingArguments(
+        **{k: v for k, v in training_args_kwargs.items() if v is not None}
+    )
     log.info(
         "TrainingArguments distributed summary: local_rank=%s world_size=%s ddp_find_unused_parameters=%s fsdp=%s fsdp_config=%s",
         training_args.local_rank,
@@ -1141,26 +1166,28 @@ def main(cfg: DictConfig) -> HfTrainer:
         getattr(training_args, "fsdp", None),
         hf_fsdp_config,
     )
-    
+
     # Build trainer with custom optimizer if LoRA has different LR
     trainer_kwargs = {
         "model": model,
         "args": training_args,
         "train_dataset": train_dataset,
         "eval_dataset": eval_dataset,
-        #"data_collator": DataCollatorWithPadding(tokenizer=tokenizer, padding=True, return_tensors="pt"),
-        #"tokenizer": tokenizer,
+        # "data_collator": DataCollatorWithPadding(tokenizer=tokenizer, padding=True, return_tensors="pt"),
+        # "tokenizer": tokenizer,
     }
-    
+
     if custom_optimizer is not None:
         trainer_kwargs["optimizers"] = (custom_optimizer, None)  # (optimizer, scheduler)
 
     print(trainer_kwargs)
-    #raise ValueError(trainer_kwargs)
-    
+    # raise ValueError(trainer_kwargs)
+
     trainer = HfTrainer(**trainer_kwargs)
     if fsdp_config is not None:
-        trainer.add_callback(_FSDPStateLoggingCallback(expect_fsdp=world_size > 1, world_size=world_size))
+        trainer.add_callback(
+            _FSDPStateLoggingCallback(expect_fsdp=world_size > 1, world_size=world_size)
+        )
         pre_train_wrapped = _is_fsdp_wrapped_model(getattr(trainer, "model_wrapped", None))
         log.info(
             "Pre-train wrapper state: model_type=%s model_wrapped_type=%s fsdp_wrapped_pre_train=%s "
@@ -1178,18 +1205,21 @@ def main(cfg: DictConfig) -> HfTrainer:
     torch.cuda.empty_cache()
     gc.collect()
 
-    log.info("Starting training...")
-    trainer.train()
-
-    # Save final model and tokenizer
     output_dir = os.path.join(hf_save_path, run_name)
-    rank = dist.get_rank() if dist.is_initialized() else 0
-    if rank == 0:
-        trainer.save_model(output_dir)
-        tokenizer.save_pretrained(output_dir)
+    try:
+        log.info("Starting training...")
+        trainer.train()
 
-    log.info(f"Done. Model saved to {output_dir}")
-    return trainer
+        # All ranks must participate in save under distributed/FSDP.
+        trainer.save_model(output_dir)
+        if trainer.is_world_process_zero():
+            tokenizer.save_pretrained(output_dir)
+
+        log.info(f"Done. Model saved to {output_dir}")
+        return trainer
+    finally:
+        if dist.is_initialized():
+            dist.destroy_process_group()
 
 
 if __name__ == "__main__":
