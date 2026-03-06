@@ -9,7 +9,7 @@ import tempfile
 import time
 import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import random
@@ -44,53 +44,14 @@ def process_init_device(model_config, fsdp_config):
 from peft import get_peft_model, LoraConfig
 from rich.traceback import install
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig, PreTrainedTokenizerBase
-from transformers import Trainer as HfTrainer, TrainingArguments, DataCollatorForLanguageModeling
+from transformers import Trainer as HfTrainer, TrainingArguments, DataCollatorWithPadding
+from transformers import TrainerCallback
 from datasets import load_dataset
 from torch.utils.data import DataLoader
-from dataclasses import dataclass
-from typing import Dict
 
 install()
 # If certain ffn types require special handling, list them here (empty for now)
 ffns_with_megablocks = []
-
-@dataclass
-class CustomDataCollator:
-    """Custom collator that pads sequences to max length in batch."""
-    tokenizer: PreTrainedTokenizerBase
-    mlm: bool = False
-
-    def __call__(self, batch: List[Dict[str, List[int]]]) -> Dict[str, torch.Tensor]:
-        """Pad batch to max sequence length."""
-        # Find max length in this batch
-        max_len = max(len(item["input_ids"]) for item in batch)
-        
-        # Pad all sequences to max length
-        padded_batch = {
-            "input_ids": [],
-            "labels": [],
-        }
-        if "attention_mask" in batch[0]:
-            padded_batch["attention_mask"] = []
-        
-        for item in batch:
-            pad_len = max_len - len(item["input_ids"])
-            padded_batch["input_ids"].append(
-                item["input_ids"] + [self.tokenizer.pad_token_id] * pad_len
-            )
-            padded_batch["labels"].append(
-                item["labels"] + [-100] * pad_len  # -100 tokens are ignored in loss
-            )
-            if "attention_mask" in item:
-                padded_batch["attention_mask"].append(
-                    item["attention_mask"] + [0] * pad_len
-                )
-        
-        # Convert to tensors
-        return {
-            k: torch.tensor(v) if isinstance(v, list) else v 
-            for k, v in padded_batch.items()
-        }
 
 # stub tokenizer builder
 from transformers import AutoTokenizer
@@ -126,6 +87,175 @@ from omegaconf import DictConfig, OmegaConf
 from panza import PanzaWriter  # The import also loads custom Hydra resolvers
 
 log = logging.getLogger(__name__)
+
+_FSDP_SHARDING_STRATEGY_MAP = {
+    "FULL_SHARD": "full_shard",
+    "SHARD_GRAD_OP": "shard_grad_op",
+    "NO_SHARD": "no_shard",
+    "HYBRID_SHARD": "hybrid_shard",
+    "HYBRID_SHARD_ZERO2": "hybrid_shard_zero2",
+}
+
+_BACKWARD_PREFETCH_MAP = {
+    "BACKWARD_PRE": "backward_pre",
+    "BACKWARD_POST": "backward_post",
+}
+
+_FSDP_STATE_DICT_TYPE_MAP = {
+    "FULL": "FULL_STATE_DICT",
+    "FULL_STATE_DICT": "FULL_STATE_DICT",
+    "SHARDED": "SHARDED_STATE_DICT",
+    "SHARDED_STATE_DICT": "SHARDED_STATE_DICT",
+    "LOCAL": "LOCAL_STATE_DICT",
+    "LOCAL_STATE_DICT": "LOCAL_STATE_DICT",
+}
+
+try:
+    from torch.distributed.fsdp import FullyShardedDataParallel as _TorchFSDP
+except Exception:  # pragma: no cover - optional import guard for environments without FSDP deps
+    _TorchFSDP = None
+
+
+def _get_dist_env_info() -> Tuple[int, int, int]:
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    return rank, local_rank, world_size
+
+
+def _maybe_init_process_group(dist_timeout: Union[int, float]) -> Tuple[int, int, int]:
+    rank, local_rank, world_size = _get_dist_env_info()
+
+    if world_size > 1 and not dist.is_initialized():
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        dist.init_process_group(
+            backend=backend,
+            timeout=timedelta(seconds=float(dist_timeout)),
+        )
+
+    if dist.is_initialized():
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+
+    if torch.cuda.is_available() and local_rank < 0 and world_size > 1:
+        local_rank = rank % max(1, torch.cuda.device_count())
+    if torch.cuda.is_available() and local_rank >= 0:
+        torch.cuda.set_device(local_rank)
+
+    return rank, local_rank, world_size
+
+
+def _infer_transformer_layer_cls_to_wrap(model: torch.nn.Module) -> Optional[str]:
+    class_names = {module.__class__.__name__ for module in model.modules()}
+
+    # known_decoder_layers = [
+    #     "LlamaDecoderLayer",
+    #     "MistralDecoderLayer",
+    #     "MixtralDecoderLayer",
+    #     "GemmaDecoderLayer",
+    #     "Qwen2DecoderLayer",
+    #     "GPTNeoXLayer",
+    #     "OPTDecoderLayer",
+    #     "BloomBlock",
+    #     "GPT2Block",
+    # ]
+    # for cls_name in known_decoder_layers:
+    #     if cls_name in class_names:
+    #         return cls_name
+
+    for cls_name in sorted(class_names):
+        if cls_name.endswith("DecoderLayer") or cls_name.endswith("Block"):
+            return cls_name
+    return None
+
+
+def _build_hf_fsdp_args(
+    model: torch.nn.Module,
+    fsdp_config: Optional[Dict[str, Any]],
+) -> Tuple[str, Dict[str, Any]]:
+    config = dict(fsdp_config or {})
+    sharding_strategy = str(config.get("sharding_strategy", "FULL_SHARD")).upper()
+    fsdp_options = [_FSDP_SHARDING_STRATEGY_MAP.get(sharding_strategy, "full_shard"), "auto_wrap"]
+    if config.get("activation_cpu_offload", False):
+        fsdp_options.append("offload")
+    # mixed_precision = str(config.get("mixed_precision", "")).upper()
+    # if mixed_precision in {"BF16", "PURE_BF16"}:
+    #     fsdp_options.append("mixed_precision")
+
+    hf_fsdp_config: Dict[str, Any] = {}
+    if config.get("activation_checkpointing", False):
+        hf_fsdp_config["activation_checkpointing"] = True
+
+    bool_passthrough_keys = [
+        "limit_all_gathers",
+        "use_orig_params",
+        "forward_prefetch",
+        "sync_module_states",
+        "cpu_ram_efficient_loading",
+    ]
+    for key in bool_passthrough_keys:
+        if key in config:
+            hf_fsdp_config[key] = bool(config[key])
+
+    if "backward_prefetch" in config:
+        backward_prefetch = str(config["backward_prefetch"]).upper()
+        hf_fsdp_config["backward_prefetch"] = _BACKWARD_PREFETCH_MAP.get(
+            backward_prefetch,
+            str(config["backward_prefetch"]),
+        )
+
+    if "state_dict_type" in config:
+        state_dict_type = str(config["state_dict_type"]).upper()
+        hf_fsdp_config["state_dict_type"] = _FSDP_STATE_DICT_TYPE_MAP.get(
+            state_dict_type,
+            str(config["state_dict_type"]),
+        )
+
+    layer_cls_to_wrap = config.get("transformer_layer_cls_to_wrap")
+    if not layer_cls_to_wrap:
+        layer_cls_to_wrap = _infer_transformer_layer_cls_to_wrap(model)
+    if layer_cls_to_wrap:
+        hf_fsdp_config["transformer_layer_cls_to_wrap"] = layer_cls_to_wrap
+    else:
+        hf_fsdp_config["min_num_params"] = int(config.get("min_num_params", 1_000_000))
+
+    return " ".join(fsdp_options), hf_fsdp_config
+
+
+def _is_fsdp_wrapped_model(model: Optional[torch.nn.Module]) -> bool:
+    if model is None:
+        return False
+    if _TorchFSDP is not None and isinstance(model, _TorchFSDP):
+        return True
+    # Fallback check keeps this robust when torch FSDP is unavailable in tooling env.
+    return any(cls.__name__ == "FullyShardedDataParallel" for cls in type(model).mro())
+
+
+class _FSDPStateLoggingCallback(TrainerCallback):
+    def __init__(self, expect_fsdp: bool, world_size: int):
+        self.expect_fsdp = expect_fsdp
+        self.world_size = world_size
+
+    def on_train_begin(self, args, state, control, model=None, **kwargs):
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        is_wrapped = _is_fsdp_wrapped_model(model)
+        model_type = type(model).__name__ if model is not None else "None"
+        if self.expect_fsdp and not is_wrapped:
+            log.warning(
+                "Expected FSDP wrapping (world_size=%s, fsdp=%s), but model type at train begin is '%s'.",
+                self.world_size,
+                args.fsdp,
+                model_type,
+            )
+        else:
+            log.info(
+                "Train begin rank=%s world_size=%s distributed_initialized=%s model_type=%s fsdp_wrapped=%s",
+                rank,
+                self.world_size,
+                dist.is_initialized(),
+                model_type,
+                is_wrapped,
+            )
 
 
 def validate_config(cfg: DictConfig):
@@ -226,30 +356,81 @@ def _load_and_prepare_dataset(
     max_len = ds_conf.get("max_seq_len", None)
     if max_len is None:
         max_len = global_max_len
-    def tokenize_fn(examples):
-        text = examples.get("prompt", "") + examples.get("response", "")
-        tokens = tokenizer(
-            text,
-            truncation=True,
-            max_length=max_len,
-        )
-        tokens["labels"] = tokens["input_ids"].copy()
-        return tokens
-    dataset = dataset.map(tokenize_fn, batched=True, remove_columns=dataset.column_names)
+    def tokenize_fn(example):
+        prompt = example.get("prompt", "")
+        response = example.get("response", "")
+        print(prompt)
+        print(response)
+
+        # Build token-level fields explicitly so mask length always matches input_ids length.
+        prompt_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
+        response_ids = tokenizer(response, add_special_tokens=False)["input_ids"]
+
+        input_ids = (prompt_ids + response_ids)[:max_len]
+        prompt_token_count = min(len(prompt_ids), len(input_ids))
+        response_ids_truncated = input_ids[prompt_token_count:]
+
+        # For causal LM, attention_mask marks real (non-pad) tokens.
+        attention_mask = [1] * len(input_ids)
+        # Supervise only the response tokens; ignore prompt tokens in loss.
+        labels = ([-100] * prompt_token_count) + response_ids_truncated
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+        }
+    # Preserve one dataset row as one training example.
+    dataset = dataset.map(tokenize_fn, batched=False, remove_columns=dataset.column_names)
     if is_train and ds_conf.get("shuffle", True):
         dataset = dataset.shuffle()
     return dataset
 
 
 def _make_dataloader(dataset, tokenizer, batch_size: int, is_train: bool = True, loader_cfg: DictConfig = None):
-    collator = CustomDataCollator(tokenizer=tokenizer, mlm=False)
+    def collator(features):
+        token_features = []
+        for feature in features:
+            token_features.append(
+                {
+                    "input_ids": feature["input_ids"],
+                    "attention_mask": feature.get("attention_mask"),
+                }
+            )
+
+        batch = tokenizer.pad(
+            token_features,
+            padding=True,
+            return_tensors="pt",
+        )
+
+        if "labels" in features[0]:
+            max_len = batch["input_ids"].shape[1]
+            padded_labels = []
+            for feature in features:
+                labels = feature["labels"]
+                if torch.is_tensor(labels):
+                    labels = labels.tolist()
+                else:
+                    labels = list(labels)
+
+                if len(labels) > max_len:
+                    labels = labels[:max_len]
+                else:
+                    labels = labels + ([-100] * (max_len - len(labels)))
+                padded_labels.append(labels)
+
+            batch["labels"] = torch.tensor(padded_labels, dtype=torch.long)
+
+        return batch
+
     extra = {}
     if loader_cfg is not None:
         # pass through supported dataloader args
         for arg in ["num_workers", "pin_memory", "prefetch_factor", "persistent_workers", "drop_last"]:
             if arg in loader_cfg:
                 extra[arg] = loader_cfg[arg]
-    return DataLoader(dataset, batch_size=batch_size, shuffle=is_train, collate_fn=collator, **extra)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collator, **extra)
 
     # if "icl_tasks" in cfg:
     #     if cfg.model.name == "hf_t5":
@@ -394,7 +575,7 @@ def build_hf_peft_model(
         torch_dtype=compute_dtype,
         quantization_config=quant_config,
         trust_remote_code=True,
-        use_auth_token=True,
+        #use_auth_token=True,
         use_cache=False,
         attn_implementation="eager",
     )
@@ -493,17 +674,16 @@ def main(cfg: DictConfig) -> HfTrainer:
     np.random.seed(seed)
     random.seed(seed)
 
-    # Initialize pytorch distributed training process groups
+    # Initialize distributed process groups and CUDA device placement.
     dist_timeout: Union[int, float] = pop_config(
         cfg, "dist_timeout", must_exist=False, default_value=600.0
     )
-    world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    if world_size > 1 and not dist.is_initialized():
-        backend = "nccl" if torch.cuda.is_available() else "gloo"
-        try:
-            dist.init_process_group(backend=backend, timeout=timedelta(seconds=dist_timeout))
-        except Exception:
-            pass
+    rank, local_rank, world_size = _maybe_init_process_group(dist_timeout)
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1 and world_size == 1:
+        warnings.warn(
+            f"{torch.cuda.device_count()} CUDA devices are visible, but WORLD_SIZE is 1. "
+            "Launch with torchrun --nproc_per_node=<num_gpus> to enable multi-GPU/FSDP."
+        )
 
     save_merged_model: bool = pop_config(cfg, "save_merged_model", False)
 
@@ -679,15 +859,22 @@ def main(cfg: DictConfig) -> HfTrainer:
             f"Unused parameter {key} found in cfg. Please check your yaml to ensure this parameter is necessary."
         )
 
-    # Warn if fsdp is enabled but user only has 1 GPU
-    world_size = dist.get_world_size() if dist.is_initialized() else 1
-    if world_size == 1 and fsdp_config is not None:
-        warnings.warn("FSDP is not applicable for single-GPU training. Reverting to DDP.")
+    if fsdp_config is None and torch.cuda.is_available() and world_size > 1:
+        fsdp_config = {}
+        log.info("WORLD_SIZE=%s with CUDA detected. Enabling FSDP defaults.", world_size)
+
+    if fsdp_config is not None and not torch.cuda.is_available():
+        warnings.warn("FSDP requires CUDA. Reverting to non-FSDP training.")
+        fsdp_config = None
+    elif fsdp_config is not None and world_size == 1:
+        warnings.warn(
+            "FSDP requires distributed launch (WORLD_SIZE > 1). "
+            "Launch with torchrun --nproc_per_node=<num_gpus> to enable FSDP."
+        )
         fsdp_config = None
 
     # set logging level
     if python_log_level is not None:
-        rank = dist.get_rank() if dist.is_initialized() else 0
         logging.basicConfig(
             # Example of format string
             # 2022-06-29 11:22:26,152: rank0[822018][MainThread]: INFO: Message here
@@ -739,11 +926,17 @@ def main(cfg: DictConfig) -> HfTrainer:
             global_max_len=max_seq_len,
         )
         # optional: create PyTorch DataLoader if desired for debugging
-        # train_loader = _make_dataloader(train_dataset, tokenizer, device_train_batch_size, is_train=True, loader_cfg=train_loader_config)
+            
     except Exception as e:
         # if mosaicml_logger is not None:
         #     mosaicml_logger.log_exception(e)
         raise e
+    
+
+    # do not remove - debugging code to check the data.
+    # train_loader = _make_dataloader(train_dataset, tokenizer, 2, is_train=True, loader_cfg=train_loader_config)
+    # for batch in train_loader:
+    #     print(batch)
 
     # if mosaicml_logger is not None:
     #     mosaicml_logger.log_metrics({"data_validated": time.time()})
@@ -753,8 +946,6 @@ def main(cfg: DictConfig) -> HfTrainer:
     if eval_loader_config is not None:
         log.info("Building eval dataset...")
         eval_dataset = _load_and_prepare_dataset(
-            eval_loader_config,
-            tokenizer,
             eval_loader_config,
             tokenizer,
             is_train=False,
@@ -880,9 +1071,37 @@ def main(cfg: DictConfig) -> HfTrainer:
             if gradient_accumulation_steps > 1:
                 log.info(f"Using gradient accumulation: {gradient_accumulation_steps} steps (batch_size={train_batch_size}, microbatch_size={device_train_microbatch_size})")
 
+
+    per_device_train_batch_size = (
+        device_train_microbatch_size
+        if isinstance(device_train_microbatch_size, int) and device_train_microbatch_size > 0
+        else train_batch_size
+    )
+    if per_device_train_batch_size != device_train_microbatch_size:
+        log.info(
+            "device_train_microbatch_size=%s is not an integer; falling back to train_batch_size=%s",
+            device_train_microbatch_size,
+            train_batch_size,
+        )
+
+    per_device_train_batch_size = 1
+
+    hf_fsdp_mode = None
+    hf_fsdp_config = None
+    if fsdp_config is not None:
+        hf_fsdp_mode, hf_fsdp_config = _build_hf_fsdp_args(model, fsdp_config)
+        log.info("Using FSDP mode '%s' with config: %s", hf_fsdp_mode, hf_fsdp_config)
+        logged_cfg.update(
+            {
+                "fsdp": hf_fsdp_mode,
+                "fsdp_config": hf_fsdp_config,
+            },
+            merge=True,
+        )
+
     training_args_kwargs = {
         "output_dir": os.path.join(hf_save_path, run_name),
-        "per_device_train_batch_size": device_train_microbatch_size,
+        "per_device_train_batch_size": per_device_train_batch_size,
         "per_device_eval_batch_size": device_eval_batch_size,
         "learning_rate": base_lr,
         "weight_decay": opt_kwargs.get("weight_decay", 0.0),
@@ -892,7 +1111,7 @@ def main(cfg: DictConfig) -> HfTrainer:
         "optim": optim_type,
         "logging_steps": _parse_int(console_log_interval) or 1,
         "save_steps": _parse_int(save_interval),
-        "evaluation_strategy": "steps" if eval_dataset is not None else "no",
+        #"evaluation_strategy": "steps" if eval_dataset is not None else "no",
         "eval_steps": _parse_int(eval_interval),
         "fp16": "fp16" in precision,
         "bf16": "bf16" in precision,
@@ -903,12 +1122,25 @@ def main(cfg: DictConfig) -> HfTrainer:
         "warmup_steps": _parse_int(sched_kwargs.get("t_warmup", 0)) or 0,
         "lr_scheduler_type": lr_scheduler_type,
     }
+    if local_rank >= 0:
+        training_args_kwargs["local_rank"] = local_rank
+    if hf_fsdp_mode is not None:
+        training_args_kwargs["fsdp"] = hf_fsdp_mode
+        training_args_kwargs["fsdp_config"] = hf_fsdp_config
     if num_train_epochs is not None:
         training_args_kwargs["num_train_epochs"] = num_train_epochs
     if max_steps is not None:
         training_args_kwargs["max_steps"] = max_steps
 
     training_args = TrainingArguments(**{k: v for k, v in training_args_kwargs.items() if v is not None})
+    log.info(
+        "TrainingArguments distributed summary: local_rank=%s world_size=%s ddp_find_unused_parameters=%s fsdp=%s fsdp_config=%s",
+        training_args.local_rank,
+        world_size,
+        getattr(training_args, "ddp_find_unused_parameters", None),
+        getattr(training_args, "fsdp", None),
+        hf_fsdp_config,
+    )
     
     # Build trainer with custom optimizer if LoRA has different LR
     trainer_kwargs = {
@@ -916,14 +1148,29 @@ def main(cfg: DictConfig) -> HfTrainer:
         "args": training_args,
         "train_dataset": train_dataset,
         "eval_dataset": eval_dataset,
-        "data_collator": CustomDataCollator(tokenizer=tokenizer, mlm=False),
-        "tokenizer": tokenizer,
+        #"data_collator": DataCollatorWithPadding(tokenizer=tokenizer, padding=True, return_tensors="pt"),
+        #"tokenizer": tokenizer,
     }
     
     if custom_optimizer is not None:
         trainer_kwargs["optimizers"] = (custom_optimizer, None)  # (optimizer, scheduler)
+
+    print(trainer_kwargs)
+    #raise ValueError(trainer_kwargs)
     
     trainer = HfTrainer(**trainer_kwargs)
+    if fsdp_config is not None:
+        trainer.add_callback(_FSDPStateLoggingCallback(expect_fsdp=world_size > 1, world_size=world_size))
+        pre_train_wrapped = _is_fsdp_wrapped_model(getattr(trainer, "model_wrapped", None))
+        log.info(
+            "Pre-train wrapper state: model_type=%s model_wrapped_type=%s fsdp_wrapped_pre_train=%s "
+            "(HF usually wraps at train() time).",
+            type(trainer.model).__name__,
+            type(getattr(trainer, "model_wrapped", None)).__name__
+            if getattr(trainer, "model_wrapped", None) is not None
+            else "None",
+            pre_train_wrapped,
+        )
 
     if should_log_config:
         log.info("Logging config")
@@ -935,9 +1182,9 @@ def main(cfg: DictConfig) -> HfTrainer:
     trainer.train()
 
     # Save final model and tokenizer
+    output_dir = os.path.join(hf_save_path, run_name)
     rank = dist.get_rank() if dist.is_initialized() else 0
     if rank == 0:
-        output_dir = os.path.join(hf_save_path, run_name)
         trainer.save_model(output_dir)
         tokenizer.save_pretrained(output_dir)
 
