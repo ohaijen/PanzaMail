@@ -5,6 +5,6 @@ _target_: panza.llm.PeftLLM
 name: ${checkpoint}
 checkpoint: ${checkpoint}
 device: "cuda"  # Alternatively, "cuda"
-dtype: "fp32"
+dtype: "bf16"
 load_in_4bit: false
 remove_prompt_from_stream: false
