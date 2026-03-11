@@ -3,7 +3,7 @@ name = "panza_mail"
 version = "2024.08.14"
 description = "A personal email assistant, trained and running on-device."
 dependencies = [
-    "torch==2.2.2",
+    "torch",
     "ollama",
     "omegaconf",
     "fastapi",
@@ -30,9 +30,6 @@ training = [
     "gradio",
     "cmake",
     "packaging",
-    "llm-foundry@git+https://github.com/IST-DASLab/llm-foundry@panza-release",
-    "peft@git+https://github.com/IST-DASLab/peft-rosa.git@grad_quant_looser_versioning",
-    "spops-sm-80",
 ]
 contributing = [
     "pre-commit",
