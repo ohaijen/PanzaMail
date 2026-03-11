@@ -8,8 +8,8 @@ train_batch_size: 8
 device_train_microbatch_size: 1
 eval_interval: 8
 seed: ${seed}
-model_name_or_path: "ISTA-DASLab/Meta-Llama-3-8B-Instruct"
-save_merged_model: True
+#model_name_or_path: "Qwen/Qwen3.5-4B"
+save_merged_model: False
 
 lora:
   lr: ${finetuning.lr}

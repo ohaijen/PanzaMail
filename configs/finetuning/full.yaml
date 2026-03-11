@@ -4,19 +4,25 @@ defaults:
 
 max_duration: 3ep
 lr: 1e-5
-batch_size: 2
-train_batch_size: 2
+batch_size: 8
+train_batch_size: 8
 device_train_microbatch_size: 1
 eval_interval: 1
 seed: ${seed}
-model_name_or_path: "ISTA-DASLab/Meta-Llama-3-8B-Instruct"
+#model_name_or_path: "ISTA-DASLab/Meta-Llama-3-8B-Instruct"
+#model_name_or_path: "Qwen/Qwen3-4B-Instruct-2507"
+model_name_or_path: "Qwen/Qwen3.5-4B"
 
 fsdp_config:
   sharding_strategy: FULL_SHARD
   mixed_precision: FULL
+  #mixed_precision: BF16
+  use_orig_params: false
   activation_checkpointing: true
   activation_checkpointing_reentrant: false
   activation_cpu_offload: false
+  backward_prefetch: BACKWARD_PRE
+  forward_prefetch: false
   limit_all_gathers: true
   verbose: false
 

@@ -235,6 +235,42 @@ def _build_hf_fsdp_args(
     return " ".join(fsdp_options), hf_fsdp_config
 
 
+def _enable_model_activation_checkpointing(
+    model: torch.nn.Module,
+    fsdp_config: Optional[Dict[str, Any]],
+) -> bool:
+    if not fsdp_config or not fsdp_config.get("activation_checkpointing", False):
+        return False
+
+    if not hasattr(model, "gradient_checkpointing_enable"):
+        log.warning(
+            "activation_checkpointing=True requested, but model %s does not expose gradient_checkpointing_enable().",
+            type(model).__name__,
+        )
+        return False
+
+    use_reentrant = fsdp_config.get("activation_checkpointing_reentrant", None)
+    try:
+        if use_reentrant is None:
+            model.gradient_checkpointing_enable()
+        else:
+            model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": bool(use_reentrant)}
+            )
+    except TypeError:
+        model.gradient_checkpointing_enable()
+        log.warning(
+            "Model %s does not accept gradient_checkpointing_kwargs; enabled checkpointing with default settings.",
+            type(model).__name__,
+        )
+
+    log.info(
+        "Enabled model-level activation checkpointing via gradient_checkpointing_enable(use_reentrant=%s).",
+        use_reentrant,
+    )
+    return True
+
+
 def _is_fsdp_wrapped_model(model: Optional[torch.nn.Module]) -> bool:
     if model is None:
         return False
@@ -600,7 +636,7 @@ def build_hf_peft_model(
         quantization_config=quant_config,
         trust_remote_code=True,
         # use_auth_token=True,
-        use_cache=False,
+        # use_cache=False,
         attn_implementation="eager",
     )
 
@@ -935,6 +971,7 @@ def main(cfg: DictConfig) -> HfTrainer:
         model = build_hf_peft_model(
             model_config, lora_config, tokenizer, is_fsdp=fsdp_config is not None
         )
+    activation_checkpointing_via_model = _enable_model_activation_checkpointing(model, fsdp_config)
 
     # Dataloaders
     log.info("Building train dataset and loader...")
@@ -1087,7 +1124,7 @@ def main(cfg: DictConfig) -> HfTrainer:
     if device_train_microbatch_size != "auto" and device_train_microbatch_size is not None:
         if isinstance(device_train_microbatch_size, int) and device_train_microbatch_size > 0:
             # gradient_accumulation_steps = batch_size / microbatch_size
-            gradient_accumulation_steps = max(1, train_batch_size // device_train_microbatch_size)
+            gradient_accumulation_steps = max(1, train_batch_size // (device_train_microbatch_size * world_size))
             if gradient_accumulation_steps > 1:
                 log.info(
                     f"Using gradient accumulation: {gradient_accumulation_steps} steps (batch_size={train_batch_size}, microbatch_size={device_train_microbatch_size})"
@@ -1105,12 +1142,12 @@ def main(cfg: DictConfig) -> HfTrainer:
             train_batch_size,
         )
 
-    per_device_train_batch_size = 1
-
     hf_fsdp_mode = None
     hf_fsdp_config = None
     if fsdp_config is not None:
         hf_fsdp_mode, hf_fsdp_config = _build_hf_fsdp_args(model, fsdp_config)
+        if activation_checkpointing_via_model:
+            hf_fsdp_config.pop("activation_checkpointing", None)
         log.info("Using FSDP mode '%s' with config: %s", hf_fsdp_mode, hf_fsdp_config)
         logged_cfg.update(
             {
