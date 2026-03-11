@@ -6,6 +6,8 @@
 # Example usage:
 # ./train_rosa.sh user=alonso trainer.optimizer.lr=0.1
 
+# Certain parameters are saved here: /nfs/scistore19/alistgrp/eiofinov/.cache/huggingface/accelerate/default_config.yaml 
+
 set -e
 
 vars=()
@@ -26,7 +28,26 @@ do
    fi
 done
 
+# torchrun defaults to a single process unless nproc_per_node is specified.
+# Prefer explicit override via env, otherwise derive from visible GPUs.
+if [[ -n "${NPROC_PER_NODE}" ]]; then
+  nproc_per_node="${NPROC_PER_NODE}"
+elif [[ -n "${CUDA_VISIBLE_DEVICES}" ]]; then
+  # Count comma-separated devices in CUDA_VISIBLE_DEVICES
+  IFS=',' read -r -a visible_devices <<< "${CUDA_VISIBLE_DEVICES}"
+  nproc_per_node="${#visible_devices[@]}"
+else
+  nproc_per_node=$(python -c "import torch; print(torch.cuda.device_count())")
+fi
+
+if [[ -z "${nproc_per_node}" || "${nproc_per_node}" -lt 1 ]]; then
+  nproc_per_node=1
+fi
+
+echo "Launching accelerate with num_processes=${nproc_per_node}"
 
 # Then train the weights.
-torchrun ../src/panza/finetuning/train_transformers.py \
+accelerate launch \
+    --num_processes "${nproc_per_node}" \
+    ../src/panza/finetuning/train_transformers.py \
     finetuning=lora ${vars[@]}
