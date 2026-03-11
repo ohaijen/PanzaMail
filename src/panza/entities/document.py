@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from typing import Dict, List, Optional, Union
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document as LangchainDocument
 
 
