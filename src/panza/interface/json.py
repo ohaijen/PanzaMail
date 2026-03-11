@@ -26,7 +26,7 @@ bleu1 = BLEUScore(n_gram=1)
 bleu2 = BLEUScore(n_gram=2)
 bleu3 = BLEUScore(n_gram=3)
 bleu4 = BLEUScore(n_gram=4)
-mauve = load("mauve")
+#mauve = load("mauve")
 
 
 def compute_rouge_scores(predictions, goldens):
@@ -82,6 +82,7 @@ class PanzaJSON:
 
         with open(prompts_json, "r") as f:
             golden_lines = [json.loads(l) for l in f.readlines()]
+
 
         # Group json lines together by prompt to avoid weirdness in
         # eval metric computation. In case golden responses are provided,
@@ -157,6 +158,8 @@ class PanzaJSON:
             response["scores"]["ROUGE"] = compute_rouge_scores(
                 response["panza_responses"], response["golden_responses"]
             )
+            response["scores"]["NUM_WORDS"] = [len(s.split()) for s in response["panza_responses"]]
+            response["scores"]["NUM_WORDS_GOLDEN"] = [len(s.split()) for s in response["golden_responses"]]
         rouge_categories = all_responses[0]["scores"]["ROUGE"][0].keys()
         aggregate_metrics = {
             "BLEU": np.mean([s for r in all_responses for s in r["scores"]["BLEU"]]),
@@ -164,10 +167,12 @@ class PanzaJSON:
                 cat: np.mean([s[cat] for r in all_responses for s in r["scores"]["ROUGE"]])
                 for cat in rouge_categories
             },
-            "MAUVE": compute_mauve_score(
-                [r["panza_responses"] for r in all_responses],
-                [r["golden_responses"] for r in all_responses],
-            ).mauve,
+            "NUM_WORDS": np.mean([s for r in all_responses for s in r["scores"]["NUM_WORDS"]]),
+            "NUM_WORDS_GOLDEN": np.mean([s for r in all_responses for s in r["scores"]["NUM_WORDS_GOLDEN"]]),
+            # "MAUVE": compute_mauve_score(
+            #     [r["panza_responses"] for r in all_responses],
+            #     [r["golden_responses"] for r in all_responses],
+            # ).mauve,
         }
         print("########## Aggregated quality metrics ##########\n")
         print(json.dumps(aggregate_metrics, indent=2))
