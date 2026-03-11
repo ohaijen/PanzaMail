@@ -14,6 +14,8 @@ if PREPROCESSING_CONFIG_FILE:
 
     # Load tokenizer. The trust_remote_code parameter is necessary to load Phi-3.5.
     config = AutoConfig.from_pretrained(preprocessing_config.model, trust_remote_code=True)
+    if "text_config" in config:
+        config = config.text_config
     tokenizer = AutoTokenizer.from_pretrained(
         preprocessing_config.model, model_max_length=config.max_position_embeddings
     )
