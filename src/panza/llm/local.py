@@ -74,6 +74,7 @@ class LocalLLM(LLM):
             padding=True,
             truncation=True,
             return_dict=True,
+            enable_thinking=False
         )
         model_inputs = encodeds.to(self.device)
 
@@ -85,7 +86,7 @@ class LocalLLM(LLM):
 
         prompt_length = encodeds["input_ids"].shape[1]
         outputs = self.tokenizer.batch_decode(
-            generated_ids[:, prompt_length:], skip_special_tokens=True
+            generated_ids[:, prompt_length:], skip_special_tokens=False
         )
 
         return outputs
