@@ -554,6 +554,7 @@ def create_run_name(cfg: DictConfig) -> str:
 
     if hasattr(cfg.finetuning, "lora"):
         run_name += "-lora"
+        run_name += f"-r{cfg.finetuning.lora.rank}"
     else:
         run_name += "-fft"
 
