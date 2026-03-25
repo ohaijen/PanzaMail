@@ -12,9 +12,10 @@ from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
 from panza import PanzaWriter  # The import also loads custom Hydra resolvers
-from panza.entities import Document, Email, SummarizationInstruction
+from panza.entities import Document, Email, Snippet, SummarizationInstruction
 from panza.retriever import DocumentRetriever
 from panza.data_preparation.extract_emails import extract_emails
+from panza.data_preparation.extract_snippets import extract_snippets
 from panza.data_preparation.prepare_raft_emails import prepare_raft_emails
 from panza.data_preparation.rag import create_vector_store
 
@@ -42,7 +43,7 @@ def load_documents(data_path: str) -> None:
 
     with open(data_path, "r") as f:
         lines = f.readlines()
-    documents = [Email.deserialize(line.strip(",")) for line in lines]
+    documents = [Snippet.deserialize(line.strip(",")) for line in lines]
     print(f"--> # emails = {len(documents)}")
 
     return documents
@@ -59,7 +60,7 @@ def generate_synthetic_instructions(
             print(f"--> Processing batch {i // batch_size + 1}/{num_batches}")
             batch = documents[i : i + batch_size]
             instructions = [
-                SummarizationInstruction(instruction=document.email) for document in batch
+                SummarizationInstruction(instruction=document.snippet_text, context=document.source_path) for document in batch
             ]
 
             summaries = writer.run_batch(instructions)
@@ -126,10 +127,10 @@ def main(cfg: DictConfig) -> None:
     # Skip running if  already exist
     if not check_if_file_exists(cfg):
         # Extract the emails from the .mbox file
-        extract_emails(
+        extract_snippets(
             cfg.email_dump_path,
             cfg.cleaned_emails_path,
-            [cfg.user.email_address],
+            #[cfg.user.email_address],
             cfg.discarded_emails_dir,
         )
 
@@ -150,24 +151,24 @@ def main(cfg: DictConfig) -> None:
     split_and_write_data(cfg)
 
     # Use only the training data (which might be all the data) for RAG.
-    create_vector_store(
-        os.path.join(cfg.user.data_dir, "train.jsonl"),
-        cfg.rag_embedding_chunk_size,
-        cfg.rag_embedding_chunk_overlap,
-        cfg.rag_db_dir,
-        cfg.user.username,
-        cfg.rag_embedding_model,
-    )
+    # create_vector_store(
+    #     os.path.join(cfg.user.data_dir, "train.jsonl"),
+    #     cfg.rag_embedding_chunk_size,
+    #     cfg.rag_embedding_chunk_overlap,
+    #     cfg.rag_db_dir,
+    #     cfg.user.username,
+    #     cfg.rag_embedding_model,
+    # )
 
-    if cfg.number_rag_emails_to_cache_with_train_data > 0:
-        prepare_raft_emails(
-            os.path.join(cfg.user.data_dir, "train.jsonl"),
-            cfg.rag_embedding_model,
-            cfg.rag_db_dir,
-            cfg.user.username,
-            cfg.number_rag_emails_to_cache_with_train_data,
-            write_back_to_same_loc=True,
-        )
+    # if cfg.number_rag_emails_to_cache_with_train_data > 0:
+    #     prepare_raft_emails(
+    #         os.path.join(cfg.user.data_dir, "train.jsonl"),
+    #         cfg.rag_embedding_model,
+    #         cfg.rag_db_dir,
+    #         cfg.user.username,
+    #         cfg.number_rag_emails_to_cache_with_train_data,
+    #         write_back_to_same_loc=True,
+    #     )
 
 
 if __name__ == "__main__":

@@ -35,7 +35,8 @@ class Email(ABC):
             dictionary = copy.deepcopy(data)
         else:
             raise ValueError(f"Cannot deserialize data of type {type(data)}. Must be str or dict.")
-        dictionary["date"] = datetime.fromisoformat(dictionary["date"])
+        if "date" in dictionary:
+            dictionary["date"] = datetime.fromisoformat(dictionary["date"])
         return cls(**dictionary)
 
 

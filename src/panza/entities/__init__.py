@@ -1,4 +1,4 @@
-from .document import Document, Email
-from .instruction import EmailInstruction, Instruction, SummarizationInstruction
+from .document import Document, Email, Snippet
+from .instruction import EmailInstruction, Instruction, SummarizationInstruction, SnippetInstruction
 
-__all__ = ["Document", "Email", "EmailInstruction", "Instruction", "SummarizationInstruction"]
+__all__ = ["Document", "Email", "Snippet", "EmailInstruction", "Instruction", "SummarizationInstruction", SnippetInstruction]

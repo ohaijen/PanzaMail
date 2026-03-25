@@ -410,8 +410,6 @@ def _load_and_prepare_dataset(
     def tokenize_fn(example):
         prompt = example.get("prompt", "")
         response = example.get("response", "")
-        print(prompt)
-        print(response)
 
         # Build token-level fields explicitly so mask length always matches input_ids length.
         prompt_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
@@ -516,7 +514,7 @@ def _make_dataloader(
     #     act_ckpt_reentrant = fsdp_config.get("activation_checkpointing_reentrant", False)
     #     if fsdp_config is not None and act_ckpt == True and act_ckpt_reentrant == True:
     #         warnings.warn(
-    #             "`te.Linear` layers do not support activation_checkpointing with "
+    #             "`te.Linear` layers eo not support activation_checkpointing with "
     #             + "`activation_checkpointing_reentrant = True`. "
     #             + "Setting cfg.fsdp_config.activation_checkpointing_reentrant=False."
     #         )
@@ -995,6 +993,7 @@ def main(cfg: DictConfig) -> HfTrainer:
     # train_loader = _make_dataloader(train_dataset, tokenizer, 2, is_train=True, loader_cfg=train_loader_config)
     # for batch in train_loader:
     #     print(batch)
+    # sys.exit()
 
     # if mosaicml_logger is not None:
     #     mosaicml_logger.log_metrics({"data_validated": time.time()})

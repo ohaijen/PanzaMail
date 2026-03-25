@@ -1,4 +1,4 @@
-from panza.entities.instruction import EmailInstruction
+from panza.entities.instruction import EmailInstruction, SnippetInstruction
 from panza.writer import PanzaWriter
 
 import json
@@ -93,15 +93,19 @@ class PanzaJSON:
         for entry in golden_lines:
             # 'summary' is the name of the 'prompt' field, i.e., the one to group on.
             if entry["summary"] in grouped_golden:
-                if "email" in entry:
+                #if "email" in entry:
+                if "snippet_text" in entry:
                     has_goldens = True
-                    grouped_golden[entry["summary"]]["goldens"].append(entry["email"])
+                    #grouped_golden[entry["summary"]]["goldens"].append(entry["email"])
+                    grouped_golden[entry["summary"]]["goldens"].append(entry["snippet_text"])
             else:
                 grouped_golden[entry["summary"]] = {}
-                if "email" in entry:
+                #if "email" in entry:
+                if "snippet_text" in entry:
                     has_goldens = True
-                    grouped_golden[entry["summary"]]["goldens"] = [(entry["email"])]
-            grouped_golden[entry["summary"]]["thread"] = entry["thread"]
+                    #grouped_golden[entry["summary"]]["goldens"] = [(entry["email"])]
+                    grouped_golden[entry["summary"]]["goldens"] = [(entry["snippet_text"])]
+            #grouped_golden[entry["summary"]]["thread"] = entry["thread"]
         # Convert dict to list of (k, v) pairs to batch through it.
         grouped_golden = list(grouped_golden.items())
 
@@ -131,7 +135,8 @@ class PanzaJSON:
 
                 outputs, full_prompts = self.writer.run_batch(
                     [
-                        EmailInstruction(user_input[0], thread=user_input[1])
+                        #EmailInstruction(user_input[0], thread=user_input[1])
+                        SnippetInstruction(user_input[0], context=user_input[1])
                         for user_input in instructions
                     ],
                     return_prompt=True,

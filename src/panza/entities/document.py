@@ -85,3 +85,49 @@ class Email(Document):
         documents = text_splitter.split_documents(documents)
 
         return documents
+
+
+@dataclass(kw_only=True)
+class Snippet(Document):
+    source_path: str
+    source_ext: str
+    snippet_text: str
+    snippet_word_count: int
+    paragraph_count: int
+    id: str
+
+    def serialize(self) -> dict:
+        dictionary = asdict(self)
+        return dictionary
+
+    @classmethod
+    def deserialize(cls, data: Union[str, Dict]) -> "Snippet":
+        if isinstance(data, str):
+            dictionary = json.loads(data)
+        elif isinstance(data, dict):
+            dictionary = copy.deepcopy(data)
+        else:
+            raise ValueError(f"Cannot deserialize data of type {type(data)}. Must be str or dict.")
+
+
+        # Clean out all unexpected keys from input dictionary to avoid errors with dataclass.
+        field_names = set(f.name for f in fields(Snippet))
+        return cls(**{k: v for k, v in dictionary.items() if k in field_names})
+
+    @staticmethod
+    def process(documents: List["Snippet"], chunk_size, chunk_overlap) -> List[Document]:
+        # Convert e-mails to langchain documents
+        documents = [
+            LangchainDocument(
+                page_content=snippet.snippet_text, metadata={"serialized_document": snippet.serialize(), "source_path": snippet.source_path}
+            )
+            for snippet in documents
+        ]
+
+        # Split long e-mails into text chuncks
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap
+        )
+        documents = text_splitter.split_documents(documents)
+
+        return documents

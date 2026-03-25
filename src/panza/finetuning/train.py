@@ -259,12 +259,12 @@ def build_composer_peft_model(
     eval_metrics = [
         LanguageCrossEntropy(),
         LanguagePerplexity(),
-        InContextLearningLMAccuracy(),
-        InContextLearningMultipleChoiceAccuracy(),
-        InContextLearningQAAccuracy(),
-        InContextLearningCodeEvalAccuracy(),
-        InContextLearningLMExpectedCalibrationError(),
-        InContextLearningMCExpectedCalibrationError(),
+        # InContextLearningLMAccuracy(),
+        # InContextLearningMultipleChoiceAccuracy(),
+        # InContextLearningQAAccuracy(),
+        # InContextLearningCodeEvalAccuracy(),
+        # InContextLearningLMExpectedCalibrationError(),
+        # InContextLearningMCExpectedCalibrationError(),
     ]
 
     model = HuggingFaceModelWithFSDP(
@@ -553,6 +553,9 @@ def main(cfg: DictConfig) -> Trainer:
     tokenizer_kwargs["num_proc"] = 1
     tokenizer = build_tokenizer(tokenizer_name, tokenizer_kwargs)
 
+    #raise ValueError(tokenizer("Write an email to eliza asking to meet next week."))
+
+
     # Scheduler
     scheduler_name: str = scheduler_config.pop("name")
     scheduler = build_scheduler(scheduler_name, scheduler_config)
@@ -643,6 +646,42 @@ def main(cfg: DictConfig) -> Trainer:
         if mosaicml_logger is not None:
             mosaicml_logger.log_exception(e)
         raise e
+
+
+
+    # import pickle as pkl
+    # print(dir(train_loader))
+    for batch in train_loader.dataloader:
+        # with open("debug_init.pkl", 'wb') as f:
+        #     pkl.dump({"batch": batch}, f)
+        for k, v in batch.items():
+            if k == "sequence_id":
+                continue
+            print(k)
+            print(v)
+            #print((v <0).to(torch.int8).mean())
+        #sys.exit()
+        #print("here")
+    #     #batch = batch.to("cuda")
+    #     batch.pop("sequence_id")
+    #     for k, v in batch.items():
+    #         batch[k] = batch[k][:2]
+    #     #mmodel = model.model.to("cuda")
+    #     print(model.model.device)
+    #     print(model.model.dtype)
+    #     #t model.model.to("cuda")
+    #     print(model.model(**batch))
+        
+    #     break
+
+
+    # print("DONE")
+    
+    # with open("debug_init.pkl", 'rb') as f:
+    #     mybatch_dict = pkl.load(f)
+    # print(model(mybatch_dict["batch"]))
+    # mybatch = mybatch_dict["batch"]
+
 
     if mosaicml_logger is not None:
         mosaicml_logger.log_metrics({"data_validated": time.time()})
@@ -788,7 +827,6 @@ def main(cfg: DictConfig) -> Trainer:
     if eval_first and trainer.state.timestamp.batch.value == 0:
         trainer.eval()
 
-
     log.info("Starting training...")
     trainer.fit()
 
@@ -812,6 +850,12 @@ def main(cfg: DictConfig) -> Trainer:
             path_to_save, is_main_process=True, state_dict=model.model.state_dict()
         )
         tokenizer.save_pretrained(path_to_save)
+
+
+    # print(model(mybatch))
+    # with open("debug.pkl", 'wb') as f:
+    #     pkl.dump({"batch": mybatch, "result": model(mybatch)}, f)
+    # raise ValueError("done")
 
     if save_merged_model:
         path_to_save = os.path.join(hf_save_path, run_name, "merged")

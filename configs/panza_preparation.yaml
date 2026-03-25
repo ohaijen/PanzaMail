@@ -5,18 +5,19 @@ defaults:
 
 batch_size: 8
 
-email_dump_path: ${user.data_dir}/Sent.mbox
+email_dump_path: ${user.data_dir}/kept_snippets.json
 cleaned_emails_path: ${user.data_dir}/${user.username}_clean.jsonl
 discarded_emails_dir: ${user.data_dir}/${user.username}/discarded_emails
 summarized_emails_path: ${user.data_dir}/${user.username}_clean_summarized.jsonl
 
 rag_db_dir: ${user.data_dir}
 
-checkpoint: "microsoft/Phi-3-mini-4k-instruct" 
+#checkpoint: "microsoft/Phi-3-mini-4k-instruct" 
+checkpoint: "ISTA-DASLab/Meta-Llama-3-8B-Instruct"
 force_extract_clean_emails: false # If false, data will not be recreated if it already exists.
 
  # Parameters for train-test split, if required.
-test_split: 0.
+test_split: 0.2
 split_type: random # Options are 'random', 'chronological'.
 
 # Parameters for RAG database.
@@ -30,4 +31,4 @@ rag_embedding_model: "sentence-transformers/all-mpnet-base-v2"
 # be used during training time.
 # The actual number of RAG emails used is also bounded by the setting
 # in writer/prompting/email_prompting.
-number_rag_emails_to_cache_with_train_data: 10
+number_rag_emails_to_cache_with_train_data: 0

@@ -14,6 +14,7 @@ class SummarizationPromptBuilder(PromptBuilder):
         instruction: SummarizationInstruction,
     ) -> str:
 
-        prompt = self.summarization_prompt.format(email=instruction.instruction).strip()
+        #prompt = self.summarization_prompt.format(email=instruction.instruction).strip()
+        prompt = self.summarization_prompt.format(snippet=instruction.instruction, filename=instruction.context).strip()
 
         return prompt
