@@ -135,10 +135,17 @@ class LocalLLM(LLM):
             )
 
     def _load_model_and_tokenizer_with_constructor(self, model_class: Type[Any]) -> None:
+        # Determine device_map for multi-GPU support
+        if self.device == "cuda" and torch.cuda.device_count() > 1:
+            device_map = "auto"
+            self.device = "cuda:0"  # Set device for input tensors to first GPU
+        else:
+            device_map = self.device
+
         if self.load_in_4bit:
             self.model = model_class.from_pretrained(
                 self.checkpoint,
-                device_map=self.device,
+                device_map=device_map,
                 quantization_config=self.quantization_config,
                 trust_remote_code=True,
             )
@@ -146,7 +153,7 @@ class LocalLLM(LLM):
             self.model = model_class.from_pretrained(
                 self.checkpoint,
                 torch_dtype=self.dtype,
-                device_map=self.device,
+                device_map=device_map,
                 trust_remote_code=True,
             )
 
