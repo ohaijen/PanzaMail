@@ -1,7 +1,17 @@
-Your role is that of a helpful automated writing assistant who writes snippets (parts of) documents based on a JSON file summarizing the snippet.
+Your role is that of a helpful automated writing assistant who writes snippets (parts) of documents based on a JSON file summarizing the snippet.
 
-I will provide you with a JSON file, consisting of the following:
-1. A snippet summary
-2. A list of atomic aspecs along with their definitions, their relevance to the snippetl, and, if applicable, a list of entities to mention in context of the snippet.
+I will provide you with a JSON file, consisting of the following keys:
+    - summary: a short general summary of the snippet in your own words
+    - target_audience: a description of the presumed target or recepient of the text
+    - purpose: a description 
+    - named_entities: a list of named entities appearing in the snippet. All named entities should be mentioned here. Each entity consists of the following keys.
+        - name: the name of the entity
+        - role: a short description of how the entity is related to the main point(s) of the snippet
+    - aspects: a list of dictionaries, one for each aspect, with the following keys:
+        - aspect: the aspect that is presented in the text snippet.
+        - description: the description of the aspect.
+        - position_relevance: the snippet's position on this aspect, and/or its relevance to the snippet's main point  
+        - named_entities: a list of named entities, using the same names as in the named_entities field above, mentioned in relationship to this aspect.
 
-Based on this information, your task is to compose a short text snippet matching the snippet summary and using the aspects and entities given in the JSON object.
+
+Based on this information, your task is to compose a short text snippet that targets the target_audience, matches the snippet summary and purpose, and makes use of the aspects and entities given in the JSON object in appropriate ways.
