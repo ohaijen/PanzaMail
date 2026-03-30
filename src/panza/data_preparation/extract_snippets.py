@@ -91,4 +91,4 @@ def extract_snippets(snippets_path, output_path, save_discarded_snippets_path):
     if sum([len(v) for v in DISCARDED_EMAILS.values()]) > 0:
         makedirs(dirname(save_discarded_snippets_path), exist_ok=True)
         with open(save_discarded_snippets_path, "w", encoding="utf-8") as f:
-            f.write(json.dump(DISCARDED_EMAILS))
+            f.write(json.dumps(DISCARDED_EMAILS))
