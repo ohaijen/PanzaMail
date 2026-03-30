@@ -189,6 +189,7 @@ class PanzaJSON:
         checkpoint: str,
         panza_workspace: str,
         input_file: str,
+        output_path: str,
         batch_size: int,
         use_thread: bool,
         responses_per_prompt: int,
@@ -208,6 +209,9 @@ class PanzaJSON:
                     "\nDumping responses without computing metrics.",
                 )
 
-        output_path = self.compose_output_folder(input_file, checkpoint, panza_workspace, username)
+        if output_path == "":
+            output_path = self.compose_output_folder(input_file, checkpoint, panza_workspace, username)
+            #output_path = "/nfs/scistore19/alistgrp/eiofinov/PanzaMail/" + "Qwen3.5-9B.json"
         with open(output_path, "w") as f:
             json.dump(responses, f, indent=4, sort_keys=True)
+        print(output_path)
