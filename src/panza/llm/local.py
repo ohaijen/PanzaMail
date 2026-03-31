@@ -82,11 +82,12 @@ class LocalLLM(LLM):
             **model_inputs,
             **self.sampling_parameters,
             pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
         )
 
         prompt_length = encodeds["input_ids"].shape[1]
         outputs = self.tokenizer.batch_decode(
-            generated_ids[:, prompt_length:], skip_special_tokens=False
+            generated_ids[:, prompt_length:], skip_special_tokens=True
         )
 
         return outputs
@@ -113,6 +114,7 @@ class LocalLLM(LLM):
             **model_inputs,
             **self.sampling_parameters,
             pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
             streamer=streamer,
         )
         from threading import Thread
