@@ -16,4 +16,4 @@ It is very important that the factual content of the snippet does not change.
 file_name: {filename}
 text_snippet: {snippet}
 
-output: "Here is the rewritten snippet: {rewritten snippet}
+output: "Here is the rewritten snippet: 
