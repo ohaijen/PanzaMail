@@ -4,7 +4,7 @@
 # python script directly.
 #
 # Example usage:
-# ./train_rosa.sh user=alonso trainer.optimizer.lr=0.1
+# ./train_rosa.sh user=snippets3 finetuning.lr=1.1e-05 finetuning.optimizer.lr=1.1e05 finetuning.train_batch_size=4 finetuning.max_duration=4 finetuning.model_name_or_path=Qwen/Qwen3.5-9B
 
 # Certain parameters are saved here: /nfs/scistore19/alistgrp/eiofinov/.cache/huggingface/accelerate/default_config.yaml 
 
@@ -45,7 +45,7 @@ fi
 echo "Launching accelerate with num_processes=${nproc_per_node}"
 
 # Then train the weights.
-accelerate launch \
+echo accelerate launch \
     --num_processes "${nproc_per_node}" \
     ../src/panza/finetuning/train_transformers.py \
-    finetuning=lora ${vars[@]}
+    finetuning=full ${vars[@]}

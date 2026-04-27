@@ -40,10 +40,10 @@ lrs=( 1.1e-05 6.3e-06 3.6e-06)
 lrs=( 3.6e-06 6.3e-06 1.1e-05 2e-05 3.6e-05 6.3e-05 0.00011 0.0002)
 lora_ranks=(8 16 32)
 batch_sizes=(4 8 16)
-batch_sizes=(8)
+#batch_sizes=(8)
 epochs=(4 5)
-epochs=(5 7)
-epochs=(9)
+#epochs=(5 7)
+#epochs=(9)
 
 cuda_device_index="${CUDA_VISIBLE_DEVICES%%,*}"
 if [[ "${cuda_device_index}" =~ ^[0-9]+$ ]] && (( cuda_device_index >= 0 )) && (( cuda_device_index < ${#models[@]} )); then
