@@ -24,6 +24,7 @@ if PREPROCESSING_CONFIG_FILE:
 def panza_preprocessing_function(inputs: Dict) -> Dict:
     try:
         prompt_raw = inputs["summary"].split("\n\nInstruction: ")[-1]
+        prompt_raw = prompt_raw.split("Here is the rewritten snippet:\n\n\: ")[-1]
         #instruction = EmailInstruction(instruction=prompt_raw, thread=inputs.get("thread", []))
         instruction = SnippetInstruction(instruction=prompt_raw, context=None)
         prompt = prompt_builder.build_prompt(instruction)

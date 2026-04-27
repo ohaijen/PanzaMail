@@ -1,4 +1,4 @@
-from panza.entities.instruction import EmailInstruction, Instruction
+from panza.entities.instruction import EmailInstruction, SnippetInstruction, Instruction
 from panza.writer import PanzaWriter
 
 
@@ -10,7 +10,7 @@ class PanzaCLI:
             if user_input == "exit":
                 break
             else:
-                instruction: Instruction = EmailInstruction(user_input)
+                instruction: Instruction = SnippetInstruction(user_input, context="")
                 stream = self.writer.run(instruction, stream=False)
                 for block in stream:
                     print(block, end="")

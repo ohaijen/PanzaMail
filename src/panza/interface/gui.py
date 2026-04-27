@@ -1,4 +1,4 @@
-from panza.entities.instruction import EmailInstruction, Instruction
+from panza.entities.instruction import EmailInstruction, SnippetInstruction, Instruction
 from panza.writer import PanzaWriter
 import gradio as gr
 
@@ -20,7 +20,7 @@ class PanzaGUI:
 
     def get_execute(self):
         def execute(input):
-            instruction: Instruction = EmailInstruction(input)
+            instruction: Instruction = SnippetInstruction(input, context="")
             stream = self.writer.run(instruction, stream=True)
             output = ""
             for chunk in stream:
