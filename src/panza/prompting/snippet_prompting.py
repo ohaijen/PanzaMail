@@ -133,6 +133,6 @@ class SnippetPromptBuilder(PromptBuilder):
             prompt += f"{rag_prompt}\n\n"
         if thread_prompt:
             prompt += f"{thread_prompt}\n\n"
-        prompt += f"Instruction: {instruction.instruction}"
+        prompt += f"Snippet to summarize: {instruction.instruction}"
 
         return prompt
