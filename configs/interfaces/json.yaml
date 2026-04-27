@@ -1,4 +1,4 @@
-input_file: ${panza_workspace}/data/test.jsonl
+input_file: ${panza_workspace}/data/${user.username}/test.jsonl
 output_path: ""
 batch_size: 4
 use_thread: false

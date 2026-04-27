@@ -2,3 +2,4 @@ _target_: panza.prompting.SummarizationPromptBuilder
 
 #summarization_prompt: ${load_preamble:${panza_workspace}/prompt_preambles/snippet_summarization_prompt.txt}
 summarization_prompt: ${load_preamble:${panza_workspace}/prompt_preambles/snippets_restatement_prompt.txt}
+#summarization_prompt: ${load_preamble:${panza_workspace}/prompt_preambles/snippets3_restatement_prompt.txt}
