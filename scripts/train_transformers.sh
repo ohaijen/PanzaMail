@@ -45,7 +45,7 @@ fi
 echo "Launching accelerate with num_processes=${nproc_per_node}"
 
 # Then train the weights.
-echo accelerate launch \
+accelerate launch \
     --num_processes "${nproc_per_node}" \
     ../src/panza/finetuning/train_transformers.py \
     finetuning=full ${vars[@]}
