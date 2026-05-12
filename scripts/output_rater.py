@@ -2,8 +2,11 @@
 """Create a Gradio interface for viewing JSONL/JSON records."""
 
 import argparse
+import difflib
+import html
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -14,7 +17,7 @@ except ImportError:
     exit(1)
 
 
-PAGE_SIZE = 25
+PAGE_SIZE = 30
 SORT_ORIGINAL = "Original order"
 SORT_FIELD_LENGTH = "Field length"
 SORT_BLEU = "BLEU score"
@@ -22,6 +25,7 @@ SORT_CHOICES = [SORT_ORIGINAL, SORT_FIELD_LENGTH, SORT_BLEU]
 DIRECTION_ASC = "Ascending"
 DIRECTION_DESC = "Descending"
 DIRECTION_CHOICES = [DIRECTION_DESC, DIRECTION_ASC]
+EDITABLE_FIELD_KEY = "editable_text"
 
 
 def read_json_records(file_path: str) -> List[Dict[str, Any]]:
@@ -59,13 +63,33 @@ def read_jsonl_records(file_path: str) -> List[Dict[str, Any]]:
     return records
 
 
-# def write_jsonl_records(file_path: str, records: List[Dict[str, Any]]) -> None:
-#     """Write records back to JSONL file, preserving order."""
-#     with open(file_path, 'w', encoding='utf-8') as f:
-#         for record in records:
-#             # Remove our internal tracking field
-#             clean_record = {k: v for k, v in record.items() if k != '_line_number'}
-#             f.write(json.dumps(clean_record, ensure_ascii=False) + '\n')
+def write_jsonl_records(file_path: str, records: List[Dict[str, Any]]) -> None:
+    print("!!!!!!!! Writing Records")
+    """Write records back to JSONL file, preserving order."""
+    with open(file_path, 'w', encoding='utf-8') as f:
+        for record in records:
+            # Remove our internal tracking field
+            clean_record = {k: v for k, v in record.items() if k != '_line_number'}
+            f.write(json.dumps(clean_record, ensure_ascii=False) + '\n')
+
+
+def write_json_records(file_path: str, records: List[Dict[str, Any]]) -> None:
+    """Write records back to JSON file, preserving the original format."""
+    # Read the original file to preserve any additional structure
+    with open(file_path, 'r', encoding='utf-8') as f:
+        original_data = json.load(f)
+    
+    # Update the responses array with our modified records
+    clean_records = []
+    for record in records:
+        # Remove our internal tracking field
+        clean_record = {k: v for k, v in record.items() if k != '_line_number'}
+        clean_records.append(clean_record)
+    
+    original_data["responses"] = clean_records
+    
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(original_data, f, ensure_ascii=False, indent=2)
 
 
 def is_json_file(file_path: str) -> bool:
@@ -117,6 +141,46 @@ def display_value(value: Any) -> str:
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False, indent=2)
     return str(value)
+
+
+def highlight_diff_values(value_a: str, value_b: str, show_diff: bool) -> Tuple[str, str]:
+    """Return HTML for two values with differing tokens highlighted."""
+    if not show_diff or value_a == value_b:
+        return html.escape(value_a), html.escape(value_b)
+
+    tokens_a = re.findall(r"\s+|\S+", value_a)
+    tokens_b = re.findall(r"\s+|\S+", value_b)
+    matcher = difflib.SequenceMatcher(None, tokens_a, tokens_b, autojunk=False)
+    highlighted_a = []
+    highlighted_b = []
+
+    for tag, start_a, end_a, start_b, end_b in matcher.get_opcodes():
+        chunk_a = html.escape("".join(tokens_a[start_a:end_a]))
+        chunk_b = html.escape("".join(tokens_b[start_b:end_b]))
+        if tag == "equal":
+            highlighted_a.append(chunk_a)
+            highlighted_b.append(chunk_b)
+        elif tag == "delete":
+            highlighted_a.append(f'<strong style="background:#ffe3e3;color:#9f1239;">{chunk_a}</strong>')
+        elif tag == "insert":
+            highlighted_b.append(f'<strong style="background:#dcfce7;color:#166534;">{chunk_b}</strong>')
+        else:
+            highlighted_a.append(f'<strong style="background:#ffe3e3;color:#9f1239;">{chunk_a}</strong>')
+            highlighted_b.append(f'<strong style="background:#dcfce7;color:#166534;">{chunk_b}</strong>')
+
+    return "".join(highlighted_a), "".join(highlighted_b)
+
+
+def render_text_field(field: str, value_html: str) -> str:
+    """Render a readonly field with pre-wrapped escaped/highlighted HTML."""
+    return (
+        '<div style="border:1px solid #d1d5db;border-radius:6px;padding:8px;'
+        'background:#fff;min-height:96px;">'
+        f'<div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:6px;">{html.escape(field)}</div>'
+        '<div style="white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;'
+        f'font-size:13px;line-height:1.35;color:#111827;">{value_html}</div>'
+        '</div>'
+    )
 
 
 def get_field_length(record: Dict[str, Any], field: str) -> int:
@@ -184,6 +248,26 @@ def create_main_interface(jsonl_file: str, fields: List[str]):
 
     show_bleu = is_json_file(jsonl_file)
     default_sort_field = fields[0]
+    diff_field_a = fields[0]
+    diff_field_b = fields[1] if len(fields) > 1 else None
+    show_diff_default = diff_field_b is not None
+
+    def get_field_display_values(record: Dict[str, Any], show_diff: bool) -> List[str]:
+        if not diff_field_b:
+            return [display_value(record.get(field, "N/A")) for field in fields]
+
+        value_a = display_value(record.get(diff_field_a, "N/A"))
+        value_b = display_value(record.get(diff_field_b, "N/A"))
+        highlighted_a, highlighted_b = highlight_diff_values(value_a, value_b, show_diff)
+        values = [
+            render_text_field(diff_field_a, highlighted_a),
+            render_text_field(diff_field_b, highlighted_b),
+        ]
+        values.extend(display_value(record.get(field, "N/A")) for field in fields[2:])
+        return values
+
+    def get_editable_note_value(record: Dict[str, Any]) -> str:
+        return display_value(record.get(EDITABLE_FIELD_KEY, record.get(diff_field_b, "")))
 
     def get_page_count(sorted_records: List[Dict[str, Any]]) -> int:
         return max(1, (len(sorted_records) + PAGE_SIZE - 1) // PAGE_SIZE)
@@ -214,6 +298,7 @@ def create_main_interface(jsonl_file: str, fields: List[str]):
         sort_by: str,
         sort_field: str,
         sort_direction: str,
+        show_diff: bool,
     ) -> List[Any]:
         page_index, page_records, status = get_page_records(
             page_index, sort_by, sort_field, sort_direction
@@ -227,11 +312,13 @@ def create_main_interface(jsonl_file: str, fields: List[str]):
                 updates.append(gr.update(value="", visible=False))
                 for _ in fields:
                     updates.append(gr.update(value="", visible=False))
+                updates.append(gr.update(value="", visible=False))
                 continue
 
             record = page_records[slot]
             sorted_index = page_start + slot
             bleu_score = get_bleu_score(record)
+            field_values = get_field_display_values(record, show_diff)
             updates.append(
                 gr.update(
                     value=format_record_header(
@@ -246,13 +333,19 @@ def create_main_interface(jsonl_file: str, fields: List[str]):
                     visible=show_bleu and bleu_score is not None,
                 )
             )
-            for field in fields:
+            for field_value in field_values:
                 updates.append(
                     gr.update(
-                        value=display_value(record.get(field, "N/A")),
+                        value=field_value,
                         visible=True,
                     )
                 )
+            updates.append(
+                gr.update(
+                    value=get_editable_note_value(record),
+                    visible=True,
+                )
+            )
 
         return updates
 
@@ -261,23 +354,26 @@ def create_main_interface(jsonl_file: str, fields: List[str]):
         sort_by: str,
         sort_field: str,
         sort_direction: str,
+        show_diff: bool,
     ) -> List[Any]:
-        return row_values((page_index or 0) - 1, sort_by, sort_field, sort_direction)
+        return row_values((page_index or 0) - 1, sort_by, sort_field, sort_direction, show_diff)
 
     def next_page(
         page_index: int,
         sort_by: str,
         sort_field: str,
         sort_direction: str,
+        show_diff: bool,
     ) -> List[Any]:
-        return row_values((page_index or 0) + 1, sort_by, sort_field, sort_direction)
+        return row_values((page_index or 0) + 1, sort_by, sort_field, sort_direction, show_diff)
 
     def first_page(
         sort_by: str,
         sort_field: str,
         sort_direction: str,
+        show_diff: bool,
     ) -> List[Any]:
-        return row_values(0, sort_by, sort_field, sort_direction)
+        return row_values(0, sort_by, sort_field, sort_direction, show_diff)
 
     initial_page_index, initial_records, initial_status = get_page_records(
         0, SORT_ORIGINAL, default_sort_field, DIRECTION_DESC
@@ -309,17 +405,25 @@ def create_main_interface(jsonl_file: str, fields: List[str]):
             )
 
         with gr.Row():
+            show_diff_checkbox = gr.Checkbox(
+                value=show_diff_default,
+                label=f"Show diffs: {diff_field_a} vs {diff_field_b}" if diff_field_b else "Show diffs",
+            )
+
+        with gr.Row():
             previous_button = gr.Button("Previous")
             page_status = gr.Markdown(value=initial_status)
             next_button = gr.Button("Next")
 
         row_headers = []
         row_bleu_scores = []
-        row_field_textboxes = []
+        row_field_components = []
+        row_editable_textboxes = []
 
         for slot in range(PAGE_SIZE):
             record = initial_records[slot] if slot < len(initial_records) else None
             visible = record is not None
+            field_values = get_field_display_values(record, show_diff_default) if record else []
             sorted_index = slot
 
             with gr.Row():
@@ -343,25 +447,69 @@ def create_main_interface(jsonl_file: str, fields: List[str]):
                         )
                     )
 
-                field_textboxes = []
-                for field in fields:
+                field_components = []
+                for field_index, field in enumerate(fields):
                     with gr.Column(scale=2):
-                        field_textboxes.append(
-                            gr.Textbox(
-                                label=field,
-                                value=display_value(record.get(field, "N/A")) if record else "",
-                                lines=4,
-                                interactive=False,
-                                visible=visible,
+                        if diff_field_b and field_index < 2:
+                            field_components.append(
+                                gr.HTML(
+                                    value=field_values[field_index] if record else "",
+                                    visible=visible,
+                                )
                             )
+                        else:
+                            field_components.append(
+                                gr.Textbox(
+                                    label=field,
+                                    value=field_values[field_index] if record else "",
+                                    lines=4,
+                                    interactive=False,
+                                    visible=visible,
+                                )
+                            )
+                row_field_components.append(field_components)
+
+                with gr.Column(scale=2):
+                    row_editable_textboxes.append(
+                        gr.Textbox(
+                            label="Editable note",
+                            value=get_editable_note_value(record) if record else "",
+                            lines=3,
+                            interactive=True,
+                            visible=visible,
                         )
-                row_field_textboxes.append(field_textboxes)
+                    )
 
         page_outputs = [page_state, page_status]
         for slot in range(PAGE_SIZE):
             page_outputs.append(row_headers[slot])
             page_outputs.append(row_bleu_scores[slot])
-            page_outputs.extend(row_field_textboxes[slot])
+            page_outputs.extend(row_field_components[slot])
+            page_outputs.append(row_editable_textboxes[slot])
+
+        def save_changes(
+            editable_value: str,
+            slot_index: int,
+        ) -> None:
+            # Get the current page records to find the correct record
+            current_page_index = page_state.value
+            current_sort_by = sort_by_dropdown.value
+            current_sort_field = sort_field_dropdown.value
+            current_sort_direction = sort_direction_dropdown.value
+            
+            page_index, page_records, _ = get_page_records(
+                current_page_index, current_sort_by, current_sort_field, current_sort_direction
+            )
+            if slot_index < len(page_records):
+                record = page_records[slot_index]
+                record[EDITABLE_FIELD_KEY] = editable_value
+                
+                if is_jsonl_file(jsonl_file):
+                    write_jsonl_records(jsonl_file, records)
+                elif is_json_file(jsonl_file):
+                    write_json_records(jsonl_file, records)
+            
+            return None
 
         previous_button.click(
             previous_page,
@@ -370,6 +518,7 @@ def create_main_interface(jsonl_file: str, fields: List[str]):
                 sort_by_dropdown,
                 sort_field_dropdown,
                 sort_direction_dropdown,
+                show_diff_checkbox,
             ],
             outputs=page_outputs,
         )
@@ -380,9 +529,18 @@ def create_main_interface(jsonl_file: str, fields: List[str]):
                 sort_by_dropdown,
                 sort_field_dropdown,
                 sort_direction_dropdown,
+                show_diff_checkbox,
             ],
             outputs=page_outputs,
         )
+
+        # Add auto-save on change for each editable textbox
+        for slot, editable_textbox in enumerate(row_editable_textboxes):
+            editable_textbox.change(
+                save_changes,
+                inputs=[editable_textbox, gr.Number(value=slot, visible=False)],
+                outputs=[],
+            )
         for sort_control in (
             sort_by_dropdown,
             sort_field_dropdown,
@@ -394,9 +552,20 @@ def create_main_interface(jsonl_file: str, fields: List[str]):
                     sort_by_dropdown,
                     sort_field_dropdown,
                     sort_direction_dropdown,
+                    show_diff_checkbox,
                 ],
                 outputs=page_outputs,
             )
+        show_diff_checkbox.change(
+            first_page,
+            inputs=[
+                sort_by_dropdown,
+                sort_field_dropdown,
+                sort_direction_dropdown,
+                show_diff_checkbox,
+            ],
+            outputs=page_outputs,
+        )
 
     return interface
 
