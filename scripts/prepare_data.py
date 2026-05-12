@@ -1,3 +1,4 @@
+import copy
 from datetime import datetime
 import json
 import logging
@@ -44,14 +45,16 @@ def load_documents(data_path: str) -> None:
     with open(data_path, "r") as f:
         lines = f.readlines()
     documents = [Snippet.deserialize(line.strip(",")) for line in lines]
+    for document in documents:
+        document.original_text = document.snippet_text
     print(f"--> # emails = {len(documents)}")
 
     return documents
 
 
 def generate_synthetic_instructions(
-    documents: List[Document], writer: PanzaWriter, batch_size: int, output_path: str
-) -> None:
+    documents: List[Document], writer: PanzaWriter, batch_size: int, output_path: str, update_documents: bool = False
+) -> list[Document]:
     num_processed_documents = 0
     num_batches = (len(documents) - 1) // batch_size + 1
     start_time = time.time()
@@ -69,14 +72,25 @@ def generate_synthetic_instructions(
             for it, summary in enumerate(summaries):
                 # Considerf adding cleaning and filtering here.
                 batch[it].summary = summary
+                if not summary.endswith("\n"):
+                    batch[it].summary += "\n"
+                if not batch[it].snippet_text.endswith("\n"):
+                    batch[it].snippet_text += "\n"
 
             # Write the summarized documents to a file
             for document in batch:
-                f.write(json.dumps(document.serialize()))
+                new_doc = copy.deepcopy(document)
+                new_doc.snippet_text = new_doc.original_text
+                f.write(json.dumps(new_doc.serialize()))
                 f.write("\n")
 
     elapsed_time = time.time() - start_time
     LOGGER.info(f"--> Processed {num_processed_documents} documents in {elapsed_time:.2f} seconds.")
+    if update_documents:
+        for document in documents:
+            document.snippet_text = document.summary
+    print("______________________________________________")
+    return documents
 
 
 def check_if_file_exists(cfg: DictConfig) -> None:
@@ -90,6 +104,24 @@ def check_if_file_exists(cfg: DictConfig) -> None:
 
 
 def split_and_write_data(cfg):
+
+    data_dir, data_filename = os.path.split(cfg.summarized_emails_path)
+    all_data_files = [
+        entry.path
+        for entry in os.scandir(data_dir)
+        if entry.is_file() and entry.name.startswith(data_filename[:-6] + "_cycle") and entry.name.endswith("jsonl")
+    ]
+
+    all_train_data = []
+    for filename in all_data_files:
+        with open(os.path.join(data_dir, filename), "r") as f:
+            all_train_data += [l.strip() + "\n" for l in f.readlines()]
+    
+    with open(cfg.summarized_emails_path, 'w') as f:
+        f.writelines(all_train_data)
+
+
+
     if cfg.test_split == 0:
         shutil.copy(cfg.summarized_emails_path, os.path.join(cfg.user.data_dir, "train.jsonl"))
         # Bad hack - we need test data for the training to work.
@@ -124,51 +156,82 @@ def main(cfg: DictConfig) -> None:
     # Rename config keys to follow class structure
     rename_config_keys(cfg)
 
-    # Skip running if  already exist
-    if not check_if_file_exists(cfg):
-        # Extract the emails from the .mbox file
-        extract_snippets(
-            cfg.email_dump_path,
-            cfg.cleaned_emails_path,
-            #[cfg.user.email_address],
-            cfg.discarded_emails_dir,
-        )
+    # # Skip running if  already exist
+    # if not check_if_file_exists(cfg):
+    #     # Extract the emails from the .mbox file
+    #     extract_snippets(
+    #         cfg.email_dump_path,
+    #         cfg.cleaned_emails_path,
+    #         #[cfg.user.email_address],
+    #         cfg.discarded_emails_dir,
+    #     )
 
-    # Instantiate Panza writer
+
     writer: PanzaWriter = hydra.utils.instantiate(cfg.writer)
     assert isinstance(writer, PanzaWriter), "Failed to instantiate PanzaWriter"
 
+
+
+    madlibs = [
+        ["child", {"style": "childlike",
+        "description": "naive and simple, with no long words and some irrelevant info",
+        "filename": '{filename}',
+        "snippet": '{snippet}',
+        }],
+        ["professional", {"style": "polite, professional, formal, textbook",
+         "description": "impersonal, like a textbook example of how such a snippet might sound",
+        "filename": '{filename}',
+        "snippet": '{snippet}',
+         }]
+    ]
+    
+
+
     # Load documents
     documents = load_documents(cfg.cleaned_emails_path)
-    generate_synthetic_instructions(
-        documents=documents,
-        writer=writer,
-        batch_size=cfg.batch_size,
-        output_path=cfg.summarized_emails_path,
-    )
+    num_cycles = 2
+    for cycle_num in range(num_cycles):
+        for document in documents:
+            document.snippet_text = document.original_text
+        if madlibs != {}:
+            import copy
+            default_prompt = copy.deepcopy(writer.prompt_builder.summarization_prompt)
+
+            # The first madlib goes from the loaded documents to a file that looks like the final output, but is underwritten also with the name
+            # The second one goes from the snippets in that first output to the a file that looks like the final output, but...
+            # The last one also needs to be written to a file with no _name at the end.
+            num_iterations = len(madlibs)
+            for i, [name, madlib] in enumerate(madlibs):
+                print(default_prompt, madlib)
+                writer.prompt_builder.summarization_prompt = default_prompt.format(**madlib)
+
+                if i < num_iterations - 1:
+                    output_path = cfg.summarized_emails_path.replace(".jsonl", f"_{name}.jsonl")
+                else:
+                    output_path = cfg.summarized_emails_path
+
+                output_path = output_path.replace(".jsonl", f"_cycle{cycle_num}.jsonl")
+
+                documents = generate_synthetic_instructions(
+                    documents=documents,
+                    writer=writer,
+                    batch_size=cfg.batch_size,
+                    output_path=output_path,
+                    update_documents = True
+                )
+        else:
+            output_path = cfg.summarized_emails_path.replace(".jsonl", f"_cycle{cycle_num}.jsonl")
+
+            generate_synthetic_instructions(
+                documents=documents,
+                writer=writer,
+                batch_size=cfg.batch_size,
+                output_path=cfg.summarized_emails_path,
+            )
 
     # Write the test data to test.jsonl, with an optional train-test split
     split_and_write_data(cfg)
 
-    # Use only the training data (which might be all the data) for RAG.
-    # create_vector_store(
-    #     os.path.join(cfg.user.data_dir, "train.jsonl"),
-    #     cfg.rag_embedding_chunk_size,
-    #     cfg.rag_embedding_chunk_overlap,
-    #     cfg.rag_db_dir,
-    #     cfg.user.username,
-    #     cfg.rag_embedding_model,
-    # )
-
-    # if cfg.number_rag_emails_to_cache_with_train_data > 0:
-    #     prepare_raft_emails(
-    #         os.path.join(cfg.user.data_dir, "train.jsonl"),
-    #         cfg.rag_embedding_model,
-    #         cfg.rag_db_dir,
-    #         cfg.user.username,
-    #         cfg.number_rag_emails_to_cache_with_train_data,
-    #         write_back_to_same_loc=True,
-    #     )
 
 
 if __name__ == "__main__":
