@@ -108,6 +108,7 @@ class LocalLLM(LLM):
             padding=True,
             truncation=True,
             return_dict=True,
+            enable_thinking=False
         )
         model_inputs = encodeds.to(self.device)
         generation_kwargs = dict(

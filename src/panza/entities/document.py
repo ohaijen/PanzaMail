@@ -95,6 +95,7 @@ class Snippet(Document):
     snippet_word_count: int
     paragraph_count: int
     id: str
+    original_text: str = ""
 
     def serialize(self) -> dict:
         dictionary = asdict(self)
