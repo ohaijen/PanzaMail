@@ -18,7 +18,7 @@ checkpoint: "Qwen/Qwen3.5-9B"
 force_extract_clean_emails: false # If false, data will not be recreated if it already exists.
 
  # Parameters for train-test split, if required.
-test_split: 0.2
+test_split: 0.
 split_type: random # Options are 'random', 'chronological'.
 
 # Parameters for RAG database.
