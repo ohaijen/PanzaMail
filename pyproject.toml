@@ -21,6 +21,7 @@ dependencies = [
     "torchmetrics",
     "nltk",
     "accelerate",
+    "nicegui",
 ]
 
 [project.optional-dependencies]
