@@ -1,3 +1,5 @@
 _target_: panza.interface.PanzaNiceGUI
 host: localhost
 port: 8080
+username: ${user.username}
+training_data_path: ${user.data_dir}/train.jsonl

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
+import html
+import json
+import re
 from pathlib import Path
-from typing import Generator
+from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from nicegui import ui
 # try:
@@ -16,25 +20,138 @@ from panza.entities.instruction import Instruction, SnippetInstruction
 from panza.writer import PanzaWriter
 
 
+EVAL_PAGE_SIZE = 30
+TRAINING_PAGE_SIZE = 20
+SORT_ORIGINAL = "Original order"
+SORT_FIELD_LENGTH = "Field length"
+SORT_BLEU = "BLEU score"
+SORT_CHOICES = [SORT_ORIGINAL, SORT_FIELD_LENGTH, SORT_BLEU]
+DIRECTION_ASC = "Ascending"
+DIRECTION_DESC = "Descending"
+DIRECTION_CHOICES = [DIRECTION_DESC, DIRECTION_ASC]
+EDITABLE_FIELD_KEY = "editable_text"
+DEFAULT_EVALUATION_FIELDS = ["prompt", "panza_response"]
+
+
 class PanzaNiceGUI:
-    def __init__(self, writer: PanzaWriter, host: str = "localhost", port: int = 8080):
+    def __init__(
+        self,
+        writer: PanzaWriter,
+        host: str = "localhost",
+        port: int = 8080,
+        username: str | None = None,
+        training_data_path: str | None = None,
+    ):
         self.writer = writer
         self.host = host
         self.port = port
+        self.username = username
+        self.training_data_path_override = training_data_path
         self.logo_path = self._find_logo()
+        self.training_data_path = self._find_training_data_file()
+        self.default_evaluation_path = self._find_default_evaluation_file()
+
         self.prompt_input = None
         self.output_area = None
         self.status_label = None
+
+        self.training_data_status_label = None
+        self.training_data_page_status_label = None
+        self.training_data_records_container = None
+        self.training_data_records: List[Dict[str, Any]] = []
+        self.training_data_page_index = 0
+
+        self.eval_file_input = None
+        self.eval_fields_input = None
+        self.eval_sort_by_select = None
+        self.eval_sort_field_select = None
+        self.eval_sort_direction_select = None
+        self.eval_show_diff_checkbox = None
+        self.eval_file_status_label = None
+        self.eval_page_status_label = None
+        self.eval_records_container = None
+        self.eval_records: List[Dict[str, Any]] = []
+        self.eval_fields: List[str] = DEFAULT_EVALUATION_FIELDS.copy()
+        self.eval_page_index = 0
+        self.eval_file_path: Optional[Path] = None
+
         self._start_server()
 
+    def _repo_root(self) -> Path:
+        return Path(__file__).resolve().parents[3]
+
     def _find_logo(self) -> str:
-        repo_root = Path(__file__).resolve().parents[2]
-        logo_path = repo_root / "../panza_logo.png"
+        logo_path = self._repo_root() / "panza_logo.png"
         if not logo_path.exists():
             raise FileNotFoundError(
                 f"Could not find panza_logo.png at expected location: {logo_path}"
             )
         return str(logo_path)
+
+    def _resolve_path(self, path: str | Path) -> Path:
+        resolved = Path(path).expanduser()
+        if not resolved.is_absolute():
+            resolved = (self._repo_root() / resolved).resolve()
+        return resolved
+
+    def _find_user_name(self) -> Optional[str]:
+        if self.username:
+            return self.username
+
+        retriever = getattr(getattr(self.writer, "prompt_builder", None), "retriever", None)
+        index_name = getattr(retriever, "index_name", None)
+        if index_name:
+            return str(index_name)
+
+        model_dir = self._find_requested_model_dir()
+        if model_dir is not None and model_dir.name.startswith("panza_"):
+            return model_dir.name.removeprefix("panza_").split("-", 1)[0]
+        return None
+
+    def _find_training_data_file(self) -> Optional[Path]:
+        if self.training_data_path_override:
+            return self._resolve_path(self.training_data_path_override)
+
+        retriever = getattr(getattr(self.writer, "prompt_builder", None), "retriever", None)
+        db_path = getattr(retriever, "db_path", None)
+        if db_path:
+            data_dir = self._resolve_path(db_path)
+            direct_train_file = data_dir / "train.jsonl"
+            if direct_train_file.exists():
+                return direct_train_file
+
+            username = self._find_user_name()
+            if username:
+                nested_train_file = data_dir / username / "train.jsonl"
+                if nested_train_file.exists():
+                    return nested_train_file
+
+        username = self._find_user_name()
+        if username:
+            return self._repo_root() / "data" / username / "train.jsonl"
+        return None
+
+    def _find_requested_model_dir(self) -> Optional[Path]:
+        llm = getattr(self.writer, "llm", None)
+        for attr in ("checkpoint", "name", "gguf_file"):
+            value = getattr(llm, attr, None)
+            if not value:
+                continue
+            path = self._resolve_path(str(value))
+            if path.exists():
+                return path if path.is_dir() else path.parent
+        return None
+
+    def _find_default_evaluation_file(self) -> Optional[Path]:
+        model_dir = self._find_requested_model_dir()
+        if model_dir is not None:
+            return model_dir / "professor_prompts_filled_outputs.json"
+
+        model_root = self._repo_root() / "checkpoints" / "models"
+        candidates = list(model_root.glob("*/professor_prompts_filled_outputs.json"))
+        if not candidates:
+            return None
+        return max(candidates, key=lambda path: path.stat().st_mtime)
 
     def _build_interface(self) -> None:
         ui.markdown("# Panza")
@@ -42,6 +159,20 @@ class PanzaNiceGUI:
             "max-width: 240px; margin: 0 auto 24px; display: block;"
         )
 
+        with ui.tabs().classes("w-full") as tabs:
+            inference_tab = ui.tab("Inference")
+            training_data_tab = ui.tab("Training data")
+            automated_evaluation_tab = ui.tab("Automated evaluation")
+
+        with ui.tab_panels(tabs, value=inference_tab).classes("w-full"):
+            with ui.tab_panel(inference_tab):
+                self._build_inference_tab()
+            with ui.tab_panel(training_data_tab):
+                self._build_training_data_tab()
+            with ui.tab_panel(automated_evaluation_tab):
+                self._build_automated_evaluation_tab()
+
+    def _build_inference_tab(self) -> None:
         self.prompt_input = ui.input(
             label="Prompt",
             placeholder="Enter a prompt here...",
@@ -62,6 +193,67 @@ class PanzaNiceGUI:
             "margin-bottom: 16px;"
         )
         self.status_label = ui.label("")
+
+    def _build_training_data_tab(self) -> None:
+        display_path = str(self.training_data_path or "")
+        ui.label(f"File: {display_path or 'No training data file resolved.'}").classes(
+            "text-sm text-gray-600"
+        )
+
+        with ui.row().classes("w-full items-center"):
+            ui.button("Previous", on_click=self._previous_training_data_page)
+            self.training_data_page_status_label = ui.label("")
+            ui.button("Next", on_click=self._next_training_data_page)
+
+        self.training_data_status_label = ui.label("")
+        self.training_data_records_container = ui.column().classes("w-full gap-4")
+        self._load_training_data()
+
+    def _build_automated_evaluation_tab(self) -> None:
+        default_path = str(self.default_evaluation_path or "")
+        self.eval_file_input = ui.input(
+            label="Evaluation file",
+            value=default_path,
+        ).classes("w-full")
+        self.eval_fields_input = ui.input(
+            label="Fields",
+            value=", ".join(DEFAULT_EVALUATION_FIELDS),
+        ).classes("w-full")
+
+        with ui.row().classes("w-full items-end"):
+            self.eval_sort_by_select = ui.select(
+                SORT_CHOICES,
+                label="Sort by",
+                value=SORT_ORIGINAL,
+                on_change=self._render_evaluation_records,
+            )
+            self.eval_sort_field_select = ui.select(
+                DEFAULT_EVALUATION_FIELDS,
+                label="Length field",
+                value=DEFAULT_EVALUATION_FIELDS[0],
+                on_change=self._render_evaluation_records,
+            )
+            self.eval_sort_direction_select = ui.select(
+                DIRECTION_CHOICES,
+                label="Direction",
+                value=DIRECTION_DESC,
+                on_change=self._render_evaluation_records,
+            )
+            self.eval_show_diff_checkbox = ui.checkbox(
+                "Show diffs",
+                value=True,
+                on_change=self._render_evaluation_records,
+            )
+            ui.button("Load", on_click=self._load_evaluation_file)
+
+        with ui.row().classes("w-full items-center"):
+            ui.button("Previous", on_click=self._previous_evaluation_page)
+            self.eval_page_status_label = ui.label("")
+            ui.button("Next", on_click=self._next_evaluation_page)
+
+        self.eval_file_status_label = ui.label("")
+        self.eval_records_container = ui.column().classes("w-full gap-4")
+        self._load_evaluation_file()
 
     def _predict(self, input: str) -> Generator:
         instruction: Instruction = SnippetInstruction(input, context="")
@@ -95,6 +287,450 @@ class PanzaNiceGUI:
 
         self.status_label.text = "Prompt complete."
         self.status_label.update()
+
+    def _read_jsonl_records(self, file_path: Path) -> List[Dict[str, Any]]:
+        records = []
+        with file_path.open("r", encoding="utf-8") as file:
+            for line_number, line in enumerate(file, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+                record["_line_number"] = line_number
+                record["_record_number"] = len(records) + 1
+                records.append(record)
+        return records
+
+    def _load_training_data(self) -> None:
+        self.training_data_records = []
+        self.training_data_page_index = 0
+
+        if self.training_data_path is None:
+            self._set_training_data_status("No training data file could be resolved.")
+            self._render_training_data_records()
+            return
+
+        if not self.training_data_path.exists():
+            self._set_training_data_status(
+                f"Training data file not found: {self.training_data_path}"
+            )
+            self._render_training_data_records()
+            return
+
+        try:
+            self.training_data_records = self._read_jsonl_records(self.training_data_path)
+        except Exception as exc:
+            self._set_training_data_status(f"Could not load training data: {exc}")
+            self._render_training_data_records()
+            return
+
+        self._set_training_data_status(
+            f"Loaded {len(self.training_data_records)} records from {self.training_data_path}"
+        )
+        self._render_training_data_records()
+
+    def _set_training_data_status(self, status: str) -> None:
+        if self.training_data_status_label is not None:
+            self.training_data_status_label.text = status
+            self.training_data_status_label.update()
+
+    def _get_training_data_page_records(self) -> Tuple[List[Dict[str, Any]], str, int]:
+        if not self.training_data_records:
+            return [], "No training data loaded.", 0
+
+        page_count = max(
+            1,
+            (len(self.training_data_records) + TRAINING_PAGE_SIZE - 1)
+            // TRAINING_PAGE_SIZE,
+        )
+        self.training_data_page_index = max(
+            0,
+            min(self.training_data_page_index, page_count - 1),
+        )
+        start_index = self.training_data_page_index * TRAINING_PAGE_SIZE
+        end_index = min(start_index + TRAINING_PAGE_SIZE, len(self.training_data_records))
+        status = (
+            f"Page {self.training_data_page_index + 1} of {page_count} | "
+            f"Showing {start_index + 1}-{end_index} of {len(self.training_data_records)}"
+        )
+        return self.training_data_records[start_index:end_index], status, start_index
+
+    def _training_record_title(self, record: Dict[str, Any], index: int) -> str:
+        record_number = record.get("_record_number", index + 1)
+        title = f"### Record {record_number}"
+        record_id = record.get("id")
+        if record_id:
+            title += f" | {record_id}"
+        source_path = record.get("source_path")
+        if source_path:
+            title += f" | {Path(str(source_path)).name}"
+        return title
+
+    def _render_training_data_field(self, field: str, record: Dict[str, Any]) -> None:
+        if field not in record:
+            return
+        ui.textarea(
+            label=field,
+            value=self._display_value(record.get(field)),
+        ).props("readonly").classes("w-full").style("min-height: 96px;")
+
+    def _render_training_data_records(self) -> None:
+        if self.training_data_records_container is None:
+            return
+
+        page_records, status, page_start = self._get_training_data_page_records()
+        if self.training_data_page_status_label is not None:
+            self.training_data_page_status_label.text = status
+            self.training_data_page_status_label.update()
+
+        self.training_data_records_container.clear()
+        with self.training_data_records_container:
+            if not page_records:
+                ui.label("No training records to display.")
+                return
+
+            preferred_fields = [
+                "summary",
+                "snippet_text",
+                "original_text",
+                "source_path",
+                "snippet_word_count",
+                "paragraph_count",
+            ]
+            for slot, record in enumerate(page_records):
+                with ui.column().classes("w-full gap-2").style(
+                    "border-bottom: 1px solid #e5e7eb; padding: 12px 0;"
+                ):
+                    ui.markdown(self._training_record_title(record, page_start + slot))
+                    rendered_fields = [
+                        field for field in preferred_fields if field in record
+                    ]
+                    if rendered_fields:
+                        for field in rendered_fields:
+                            self._render_training_data_field(field, record)
+                    else:
+                        ui.code(
+                            json.dumps(record, ensure_ascii=False, indent=2),
+                            language="json",
+                        ).classes("w-full")
+
+    def _previous_training_data_page(self) -> None:
+        self.training_data_page_index -= 1
+        self._render_training_data_records()
+
+    def _next_training_data_page(self) -> None:
+        self.training_data_page_index += 1
+        self._render_training_data_records()
+
+    def _parse_evaluation_fields(self) -> List[str]:
+        raw_fields = self.eval_fields_input.value if self.eval_fields_input else ""
+        fields = [field.strip() for field in raw_fields.split(",") if field.strip()]
+        return fields or DEFAULT_EVALUATION_FIELDS.copy()
+
+    def _read_evaluation_records(self, file_path: Path) -> List[Dict[str, Any]]:
+        if file_path.suffix.lower() == ".jsonl":
+            records = []
+            with file_path.open("r", encoding="utf-8") as file:
+                for line_number, line in enumerate(file, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    record = json.loads(line)
+                    record["_line_number"] = line_number
+                    record["_record_number"] = len(records) + 1
+                    records.append(record)
+            return records
+
+        with file_path.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+        records = data["responses"] if isinstance(data, dict) and "responses" in data else data
+        if not isinstance(records, list):
+            raise ValueError("Expected a JSON list or an object with a 'responses' list.")
+
+        for index, record in enumerate(records):
+            record["_line_number"] = index
+            record["_record_number"] = index + 1
+            if "panza_responses" in record and "panza_response" not in record:
+                record["panza_response"] = record["panza_responses"][0]
+        return records
+
+    def _write_evaluation_records(self) -> None:
+        if self.eval_file_path is None:
+            return
+
+        clean_records = [
+            {key: value for key, value in record.items() if not key.startswith("_")}
+            for record in self.eval_records
+        ]
+        if self.eval_file_path.suffix.lower() == ".jsonl":
+            with self.eval_file_path.open("w", encoding="utf-8") as file:
+                for record in clean_records:
+                    file.write(json.dumps(record, ensure_ascii=False) + "\n")
+            return
+
+        with self.eval_file_path.open("r", encoding="utf-8") as file:
+            original_data = json.load(file)
+        if isinstance(original_data, dict) and "responses" in original_data:
+            original_data["responses"] = clean_records
+            output_data = original_data
+        else:
+            output_data = clean_records
+        with self.eval_file_path.open("w", encoding="utf-8") as file:
+            json.dump(output_data, file, ensure_ascii=False, indent=2)
+
+    def _load_evaluation_file(self) -> None:
+        if self.eval_file_input is None:
+            return
+
+        file_path = Path(self.eval_file_input.value or "").expanduser()
+        if not file_path.is_absolute():
+            file_path = (self._repo_root() / file_path).resolve()
+
+        self.eval_records = []
+        self.eval_file_path = file_path
+        self.eval_page_index = 0
+
+        if not file_path.exists():
+            self._set_evaluation_status(f"Evaluation file not found: {file_path}")
+            self._render_evaluation_records()
+            return
+
+        try:
+            self.eval_records = self._read_evaluation_records(file_path)
+            self.eval_fields = self._parse_evaluation_fields()
+        except Exception as exc:
+            self._set_evaluation_status(f"Could not load evaluation file: {exc}")
+            self._render_evaluation_records()
+            return
+
+        available_fields = set()
+        for record in self.eval_records:
+            available_fields.update(record.keys())
+        missing_fields = [field for field in self.eval_fields if field not in available_fields]
+        if self.eval_sort_field_select is not None:
+            self.eval_sort_field_select.set_options(self.eval_fields, value=self.eval_fields[0])
+            self.eval_sort_field_select.update()
+
+        status = f"Loaded {len(self.eval_records)} records from {file_path}"
+        if missing_fields:
+            status += f" | Missing fields: {', '.join(missing_fields)}"
+        self._set_evaluation_status(status)
+        self._render_evaluation_records()
+
+    def _set_evaluation_status(self, status: str) -> None:
+        if self.eval_file_status_label is not None:
+            self.eval_file_status_label.text = status
+            self.eval_file_status_label.update()
+
+    def _display_value(self, value: Any) -> str:
+        if value is None:
+            return "N/A"
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False, indent=2)
+        return str(value)
+
+    def _get_bleu_score(self, record: Dict[str, Any]) -> Optional[str]:
+        scores = record.get("scores")
+        if not isinstance(scores, dict) or "BLEU" not in scores:
+            return None
+        bleu = scores["BLEU"]
+        if isinstance(bleu, list):
+            return ", ".join(str(value) for value in bleu) if bleu else None
+        return str(bleu)
+
+    def _get_bleu_value(self, record: Dict[str, Any]) -> Optional[float]:
+        scores = record.get("scores")
+        if not isinstance(scores, dict) or "BLEU" not in scores:
+            return None
+        bleu = scores["BLEU"]
+        if isinstance(bleu, list):
+            bleu = bleu[0] if bleu else None
+        try:
+            return float(bleu)
+        except (TypeError, ValueError):
+            return None
+
+    def _get_field_length(self, record: Dict[str, Any], field: str) -> int:
+        return len(self._display_value(record.get(field, "")))
+
+    def _sorted_evaluation_records(self) -> List[Dict[str, Any]]:
+        sort_by = self.eval_sort_by_select.value if self.eval_sort_by_select else SORT_ORIGINAL
+        sort_field = (
+            self.eval_sort_field_select.value
+            if self.eval_sort_field_select and self.eval_sort_field_select.value in self.eval_fields
+            else self.eval_fields[0]
+        )
+        sort_direction = (
+            self.eval_sort_direction_select.value
+            if self.eval_sort_direction_select
+            else DIRECTION_DESC
+        )
+        reverse = sort_direction == DIRECTION_DESC
+
+        if sort_by == SORT_FIELD_LENGTH:
+            return sorted(
+                self.eval_records,
+                key=lambda record: self._get_field_length(record, sort_field),
+                reverse=reverse,
+            )
+
+        if sort_by == SORT_BLEU:
+            records_with_bleu = [
+                record for record in self.eval_records if self._get_bleu_value(record) is not None
+            ]
+            records_without_bleu = [
+                record for record in self.eval_records if self._get_bleu_value(record) is None
+            ]
+            return sorted(
+                records_with_bleu,
+                key=lambda record: self._get_bleu_value(record),
+                reverse=reverse,
+            ) + records_without_bleu
+
+        return self.eval_records
+
+    def _get_evaluation_page_records(self) -> Tuple[List[Dict[str, Any]], str, int]:
+        sorted_records = self._sorted_evaluation_records()
+        if not sorted_records:
+            return [], "No records loaded.", 1
+
+        page_count = max(1, (len(sorted_records) + EVAL_PAGE_SIZE - 1) // EVAL_PAGE_SIZE)
+        self.eval_page_index = max(0, min(self.eval_page_index, page_count - 1))
+        start_index = self.eval_page_index * EVAL_PAGE_SIZE
+        end_index = min(start_index + EVAL_PAGE_SIZE, len(sorted_records))
+        status = (
+            f"Page {self.eval_page_index + 1} of {page_count} | "
+            f"Showing {start_index + 1}-{end_index} of {len(sorted_records)}"
+        )
+        return sorted_records[start_index:end_index], status, start_index
+
+    def _highlight_diff_values(self, value_a: str, value_b: str) -> Tuple[str, str]:
+        tokens_a = re.findall(r"\s+|\S+", value_a)
+        tokens_b = re.findall(r"\s+|\S+", value_b)
+        matcher = difflib.SequenceMatcher(None, tokens_a, tokens_b, autojunk=False)
+        highlighted_a = []
+        highlighted_b = []
+
+        for tag, start_a, end_a, start_b, end_b in matcher.get_opcodes():
+            chunk_a = html.escape("".join(tokens_a[start_a:end_a]))
+            chunk_b = html.escape("".join(tokens_b[start_b:end_b]))
+            if tag == "equal":
+                highlighted_a.append(chunk_a)
+                highlighted_b.append(chunk_b)
+            elif tag == "delete":
+                highlighted_a.append(
+                    f'<strong style="background:#ffe3e3;color:#9f1239;">{chunk_a}</strong>'
+                )
+            elif tag == "insert":
+                highlighted_b.append(
+                    f'<strong style="background:#dcfce7;color:#166534;">{chunk_b}</strong>'
+                )
+            else:
+                highlighted_a.append(
+                    f'<strong style="background:#ffe3e3;color:#9f1239;">{chunk_a}</strong>'
+                )
+                highlighted_b.append(
+                    f'<strong style="background:#dcfce7;color:#166534;">{chunk_b}</strong>'
+                )
+
+        return "".join(highlighted_a), "".join(highlighted_b)
+
+    def _render_diff_field(self, field: str, value_html: str) -> None:
+        ui.html(
+            '<div style="border:1px solid #d1d5db;border-radius:6px;padding:8px;'
+            'background:#fff;min-height:96px;">'
+            '<div style="font-size:12px;font-weight:600;color:#374151;'
+            f'margin-bottom:6px;">{html.escape(field)}</div>'
+            '<div style="white-space:pre-wrap;font-family:ui-monospace,'
+            'SFMono-Regular,Menlo,Consolas,monospace;'
+            f'font-size:13px;line-height:1.35;color:#111827;">{value_html}</div>'
+            "</div>",
+            sanitize=False,
+        ).classes("w-full")
+
+    def _render_readonly_field(self, field: str, value: Any) -> None:
+        ui.textarea(
+            label=field,
+            value=self._display_value(value),
+        ).props("readonly").classes("w-full").style("min-height: 96px;")
+
+    def _render_evaluation_records(self) -> None:
+        if self.eval_records_container is None:
+            return
+
+        page_records, status, page_start = self._get_evaluation_page_records()
+        if self.eval_page_status_label is not None:
+            self.eval_page_status_label.text = status
+            self.eval_page_status_label.update()
+
+        self.eval_records_container.clear()
+        with self.eval_records_container:
+            if not page_records:
+                ui.label("No evaluation records to display.")
+                return
+
+            show_diff = (
+                bool(self.eval_show_diff_checkbox.value)
+                if self.eval_show_diff_checkbox is not None
+                else True
+            )
+            diff_field_a = self.eval_fields[0] if self.eval_fields else None
+            diff_field_b = self.eval_fields[1] if len(self.eval_fields) > 1 else None
+
+            for slot, record in enumerate(page_records):
+                sorted_index = page_start + slot
+                record_number = record.get("_record_number", sorted_index + 1)
+                with ui.column().classes("w-full gap-2").style(
+                    "border-bottom: 1px solid #e5e7eb; padding: 12px 0;"
+                ):
+                    ui.markdown(f"### Record {record_number} | Result {sorted_index + 1}")
+                    bleu_score = self._get_bleu_score(record)
+                    if bleu_score is not None:
+                        ui.markdown(f"**BLEU:** {bleu_score}")
+
+                    if show_diff and diff_field_a and diff_field_b:
+                        value_a = self._display_value(record.get(diff_field_a, "N/A"))
+                        value_b = self._display_value(record.get(diff_field_b, "N/A"))
+                        highlighted_a, highlighted_b = self._highlight_diff_values(value_a, value_b)
+                        with ui.row().classes("w-full items-stretch"):
+                            with ui.column().classes("w-full"):
+                                self._render_diff_field(diff_field_a, highlighted_a)
+                            with ui.column().classes("w-full"):
+                                self._render_diff_field(diff_field_b, highlighted_b)
+                        for field in self.eval_fields[2:]:
+                            self._render_readonly_field(field, record.get(field, "N/A"))
+                    else:
+                        for field in self.eval_fields:
+                            self._render_readonly_field(field, record.get(field, "N/A"))
+
+                    note_area = ui.textarea(
+                        label="Editable note",
+                        value=self._display_value(
+                            record.get(
+                                EDITABLE_FIELD_KEY,
+                                record.get(diff_field_b, "") if diff_field_b else "",
+                            )
+                        ),
+                    ).classes("w-full").style("min-height: 72px;")
+                    ui.button(
+                        "Save note",
+                        on_click=lambda current_record=record, textarea=note_area: (
+                            self._save_evaluation_note(current_record, textarea.value)
+                        ),
+                    )
+
+    def _save_evaluation_note(self, record: Dict[str, Any], value: str) -> None:
+        record[EDITABLE_FIELD_KEY] = value
+        self._write_evaluation_records()
+        self._set_evaluation_status(f"Saved note to {self.eval_file_path}")
+
+    def _previous_evaluation_page(self) -> None:
+        self.eval_page_index -= 1
+        self._render_evaluation_records()
+
+    def _next_evaluation_page(self) -> None:
+        self.eval_page_index += 1
+        self._render_evaluation_records()
 
     def _start_server(self) -> None:
         ui.run(root=self._build_interface, host=self.host, port=self.port, reload=False)
