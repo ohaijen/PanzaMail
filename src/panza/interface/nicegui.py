@@ -9,12 +9,6 @@ from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from nicegui import ui
-# try:
-#     from src.panza.interface.nicegui import ui
-# except ImportError as exc:
-#     raise ImportError(
-#         "NiceGUI is required for this interface. Install with `pip install nicegui`."
-#     ) from exc
 
 from panza.entities.instruction import Instruction, SnippetInstruction
 from panza.writer import PanzaWriter
