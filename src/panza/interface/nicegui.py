@@ -44,10 +44,22 @@ class PanzaNiceGUI:
         self.logo_path = self._find_logo()
         self.training_data_path = self._find_training_data_file()
         self.default_evaluation_path = self._find_default_evaluation_file()
+        self.available_models = self._find_available_models()
+        self.selected_model_path = self._find_current_model_dir() or (
+            self.available_models[0] if self.available_models else None
+        )
+        if self.selected_model_path is not None:
+            self.default_evaluation_path = (
+                self._find_evaluation_file_for_model(self.selected_model_path)
+                or self.default_evaluation_path
+            )
 
         self.prompt_input = None
         self.output_area = None
         self.status_label = None
+        self.model_selector = None
+        self.model_name_label = None
+        self.model_loading_status_label = None
 
         self.training_data_status_label = None
         self.training_data_page_status_label = None
@@ -125,6 +137,21 @@ class PanzaNiceGUI:
             return self._repo_root() / "data" / username / "train.jsonl"
         return None
 
+    def _find_default_evaluation_file(self) -> Optional[Path]:
+        model_dir = self._find_requested_model_dir()
+        if model_dir is not None:
+            eval_file = model_dir / "professor_prompts_filled_outputs.json"
+            if eval_file.exists():
+                return eval_file
+
+        # Fallback to first available model evaluation file
+        for model_path in self._find_available_models():
+            fallback_eval = model_path / "professor_prompts_filled_outputs.json"
+            if fallback_eval.exists():
+                return fallback_eval
+
+        return None
+
     def _find_requested_model_dir(self) -> Optional[Path]:
         llm = getattr(self.writer, "llm", None)
         for attr in ("checkpoint", "name", "gguf_file"):
@@ -136,16 +163,91 @@ class PanzaNiceGUI:
                 return path if path.is_dir() else path.parent
         return None
 
-    def _find_default_evaluation_file(self) -> Optional[Path]:
-        model_dir = self._find_requested_model_dir()
-        if model_dir is not None:
-            return model_dir / "professor_prompts_filled_outputs.json"
-
+    def _find_available_models(self) -> List[Path]:
         model_root = self._repo_root() / "checkpoints" / "models"
-        candidates = list(model_root.glob("*/professor_prompts_filled_outputs.json"))
-        if not candidates:
+        if not model_root.exists():
+            return []
+        username = self._find_user_name()
+        models = []
+        for path in sorted(model_root.iterdir()):
+            if not path.is_dir():
+                continue
+            if username is None or username in path.name:
+                models.append(path)
+        return models
+
+    def _find_current_model_dir(self) -> Optional[Path]:
+        llm = getattr(self.writer, "llm", None)
+        if llm is None:
             return None
-        return max(candidates, key=lambda path: path.stat().st_mtime)
+        if hasattr(llm, "checkpoint"):
+            path = Path(str(getattr(llm, "checkpoint"))).expanduser()
+            if not path.is_absolute():
+                path = self._repo_root() / path
+            if path.exists():
+                return path if path.is_dir() else path.parent
+        if hasattr(llm, "gguf_file"):
+            path = Path(str(getattr(llm, "gguf_file"))).expanduser()
+            if not path.is_absolute():
+                path = self._repo_root() / path
+            if path.exists():
+                return path.parent
+        return None
+
+    def _find_evaluation_file_for_model(self, model_dir: Optional[Path]) -> Optional[Path]:
+        if model_dir is None:
+            return None
+        candidate = model_dir / "professor_prompts_filled_outputs.json"
+        return candidate if candidate.exists() else None
+
+    def _reload_model(self, model_path: Path) -> None:
+        llm = getattr(self.writer, "llm", None)
+        if llm is None:
+            raise RuntimeError("Writer does not have an LLM to reload.")
+
+        if hasattr(llm, "checkpoint") and hasattr(llm, "_load_model_and_tokenizer"):
+            llm.checkpoint = str(model_path)
+            llm._load_model_and_tokenizer()
+        elif hasattr(llm, "gguf_file") and hasattr(llm, "_load_model"):
+            llm.gguf_file = str(model_path)
+            llm._load_model()
+        else:
+            raise RuntimeError(
+                "Current LLM type does not support runtime model switching."
+            )
+
+        self.selected_model_path = model_path
+        if self.model_name_label is not None:
+            self.model_name_label.text = model_path.name
+            self.model_name_label.update()
+        if self.model_loading_status_label is not None:
+            self.model_loading_status_label.text = f"Loaded model: {model_path.name}"
+            self.model_loading_status_label.update()
+
+        new_eval_file = self._find_evaluation_file_for_model(model_path)
+        if new_eval_file is not None:
+            self.default_evaluation_path = new_eval_file
+            if self.eval_file_input is not None:
+                self.eval_file_input.value = str(new_eval_file)
+                self.eval_file_input.update()
+                self._load_evaluation_file()
+
+    def _on_model_selected(self) -> None:
+        if self.model_selector is None or not self.model_selector.value:
+            return
+        selected_name = self.model_selector.value
+        selected_path = next(
+            (path for path in self.available_models if path.name == selected_name),
+            None,
+        )
+        if selected_path is None:
+            return
+        try:
+            self._reload_model(selected_path)
+        except Exception as exc:
+            if self.model_loading_status_label is not None:
+                self.model_loading_status_label.text = f"Could not load model: {exc}"
+                self.model_loading_status_label.update()
 
     def _build_interface(self) -> None:
         ui.markdown("# Panza")
@@ -154,17 +256,50 @@ class PanzaNiceGUI:
         )
 
         with ui.tabs().classes("w-full") as tabs:
+            model_selector_tab = ui.tab("Model selector")
             inference_tab = ui.tab("Inference")
             training_data_tab = ui.tab("Training data")
             automated_evaluation_tab = ui.tab("Automated evaluation")
 
-        with ui.tab_panels(tabs, value=inference_tab).classes("w-full"):
+        with ui.tab_panels(tabs, value=model_selector_tab).classes("w-full"):
+            with ui.tab_panel(model_selector_tab):
+                self._build_model_selector_tab()
             with ui.tab_panel(inference_tab):
                 self._build_inference_tab()
             with ui.tab_panel(training_data_tab):
                 self._build_training_data_tab()
             with ui.tab_panel(automated_evaluation_tab):
                 self._build_automated_evaluation_tab()
+
+    def _build_model_selector_tab(self) -> None:
+        selected_name = (
+            self.selected_model_path.name if self.selected_model_path else None
+        )
+        available_names = [path.name for path in self.available_models]
+        if selected_name and selected_name not in available_names:
+            available_names.insert(0, selected_name)
+
+        ui.label("Select which model should be used for inference and automated evaluation.").classes(
+            "text-sm text-gray-600"
+        )
+        self.model_name_label = ui.label(
+            f"Current model: {selected_name or 'None'}"
+        )
+        self.model_loading_status_label = ui.label(
+            "" if self.selected_model_path else "No model selected."
+        )
+        self.model_selector = ui.select(
+            available_names,
+            label="Available models",
+            value=selected_name or (available_names[0] if available_names else ""),
+            on_change=self._on_model_selected,
+        ).classes("w-full")
+
+        if not available_names:
+            ui.markdown(
+                "**No models were found in `checkpoints/models`." \
+                " Ensure your model directories are present and your username matches the model name.**"
+            )
 
     def _build_inference_tab(self) -> None:
         self.prompt_input = ui.input(
@@ -682,29 +817,29 @@ class PanzaNiceGUI:
                     if bleu_score is not None:
                         ui.markdown(f"**BLEU:** {bleu_score}")
 
-                    if show_diff and diff_field_a and diff_field_b:
-                        value_a = self._display_value(record.get(diff_field_a, "N/A"))
-                        value_b = self._display_value(record.get(diff_field_b, "N/A"))
-                        highlighted_a, highlighted_b = self._highlight_diff_values(value_a, value_b)
-                        with ui.row().classes("w-full items-stretch"):
-                            with ui.column().classes("w-full"):
-                                self._render_diff_field(diff_field_a, highlighted_a)
-                            with ui.column().classes("w-full"):
-                                self._render_diff_field(diff_field_b, highlighted_b)
-                        for field in self.eval_fields[2:]:
-                            self._render_readonly_field(field, record.get(field, "N/A"))
-                    else:
-                        for field in self.eval_fields:
-                            self._render_readonly_field(field, record.get(field, "N/A"))
+                    value_a = self._display_value(record.get("prompt", "N/A"))
+                    value_b = self._display_value(record.get("panza_response", "N/A"))
+                    with ui.row().classes("w-full items-stretch gap-4"):
+                        with ui.column().classes("w-full"):
+                            if show_diff:
+                                highlighted_a, highlighted_b = self._highlight_diff_values(value_a, value_b)
+                                self._render_diff_field("prompt", highlighted_a)
+                            else:
+                                self._render_readonly_field("prompt", record.get("prompt", "N/A"))
+                        with ui.column().classes("w-full"):
+                            if show_diff:
+                                self._render_diff_field("panza_response", self._highlight_diff_values(value_a, value_b)[1])
+                            else:
+                                self._render_readonly_field("panza_response", record.get("panza_response", "N/A"))
+
+                    for field in self.eval_fields:
+                        if field in {"prompt", "panza_response"}:
+                            continue
+                        self._render_readonly_field(field, record.get(field, "N/A"))
 
                     note_area = ui.textarea(
-                        label="Editable note",
-                        value=self._display_value(
-                            record.get(
-                                EDITABLE_FIELD_KEY,
-                                record.get(diff_field_b, "") if diff_field_b else "",
-                            )
-                        ),
+                        label="Notes",
+                        value=self._display_value(record.get(EDITABLE_FIELD_KEY, "")),
                     ).classes("w-full").style("min-height: 72px;")
                     ui.button(
                         "Save note",
