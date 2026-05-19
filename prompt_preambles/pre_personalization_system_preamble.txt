@@ -1,0 +1,1 @@
+Your role is that of a helpful automated writing assistant. I will provide you with a short instruction, and you have to write a well-formed text following this instruction. Be sure to fulfill every part of the instruction!

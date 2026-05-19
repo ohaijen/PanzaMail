@@ -2,4 +2,5 @@ _target_: panza.interface.PanzaNiceGUI
 host: localhost
 port: 8080
 username: ${user.username}
+use_pre_personalization_model: true
 training_data_path: ${user.data_dir}/train.jsonl

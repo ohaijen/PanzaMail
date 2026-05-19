@@ -11,6 +11,7 @@ class SnippetPromptBuilder(PromptBuilder):
         self,
         retriever: DocumentRetriever,
         system_preamble: str,
+        pre_personalization_system_preamble: str,
         user_preamble: str,
         rag_preamble: str,
         thread_preamble: str,
@@ -20,6 +21,7 @@ class SnippetPromptBuilder(PromptBuilder):
     ):
         self.retriever = retriever
         self.system_preamble = system_preamble
+        self.pre_personalization_system_preamble = pre_personalization_system_preamble
         self.user_preamble = user_preamble
         self.rag_preamble = rag_preamble
         self.thread_preamble = thread_preamble

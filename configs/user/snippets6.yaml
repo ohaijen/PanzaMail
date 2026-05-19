@@ -4,6 +4,7 @@ username: "snippets6"  # This identifies the user in the users directory and the
 data_dir: ${panza_workspace}/data/snippets6
 
 system_preamble_path: ${panza_workspace}/prompt_preambles/summarized_snippet_system_preamble.txt
+pre_personalization_system_preamble_path: ${panza_workspace}/prompt_preambles/pre_personalization_system_preamble.txt
 #summarization_preamble_path: ${panza_workplace}/prompt_preambles/snippets3_restatement_prompt.txt
 user_preamble_path: ${panza_workspace}/prompt_preambles/david_preamble.txt
 rag_preamble_path: ${panza_workspace}/prompt_preambles/rag_preamble.txt

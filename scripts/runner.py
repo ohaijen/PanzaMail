@@ -56,9 +56,15 @@ def main(cfg: DictConfig) -> None:
     writer: PanzaWriter = hydra.utils.instantiate(cfg.writer)
     assert isinstance(writer, PanzaWriter), "Failed to instantiate PanzaWriter"
 
+    if cfg.use_pre_personalization_model:
+        pre_personalization_writer: PanzaWriter = hydra.utils.instantiate(cfg.writer)
+        pre_personalization_writer.prompt_builder.system_preamble = pre_personalization_writer.prompt_builder.pre_personalization_system_preamble
+        print(pre_personalization_writer.prompt_builder.system_preamble)
+    else:
+        pre_personalization_writer = None
+    
     # Instantiate interfaces (CLI, GUI, web, etc) as specified in the configuration
-    hydra.utils.instantiate(cfg.interfaces, writer=writer)
-
+    hydra.utils.instantiate(cfg.interfaces, writer=writer, pre_personalization_writer=pre_personalization_writer)
 
 if __name__ == "__main__":
     main()

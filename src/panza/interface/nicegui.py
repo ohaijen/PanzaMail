@@ -31,12 +31,16 @@ class PanzaNiceGUI:
     def __init__(
         self,
         writer: PanzaWriter,
+        pre_personalization_writer: PanzaWriter | None,
+        use_pre_personalization_model: bool = True,
         host: str = "localhost",
         port: int = 8080,
         username: str | None = None,
         training_data_path: str | None = None,
     ):
         self.writer = writer
+        # allow an explicit pre-personalization writer; fall back to the main writer
+        self.pre_personalization_writer = pre_personalization_writer
         self.host = host
         self.port = port
         self.username = username
@@ -56,6 +60,7 @@ class PanzaNiceGUI:
 
         self.prompt_input = None
         self.output_area = None
+        self.generic_output_area = None
         self.status_label = None
         self.model_selector = None
         self.model_name_label = None
@@ -308,6 +313,16 @@ class PanzaNiceGUI:
             value="",
         ).style("width: 100%; margin-bottom: 16px;")
 
+        self.generic_output_area = (
+            ui.textarea(
+                label="Generic Output",
+                placeholder="Output from pre-personalization model will appear here.",
+                value="",
+            )
+            .props("readonly")
+            .style("width: 100%; min-height: 160px; margin-bottom: 12px;")
+        )
+
         self.output_area = (
             ui.textarea(
                 label="Panza Output",
@@ -389,6 +404,11 @@ class PanzaNiceGUI:
         stream: Generator = self.writer.run(instruction, stream=True)
         return stream
 
+    def _predict_with_writer(self, writer: PanzaWriter, input: str) -> Generator:
+        instruction: Instruction = SnippetInstruction(input, context="")
+        stream: Generator = writer.run(instruction, stream=True)
+        return stream
+
     def _streamer(self, stream):
         for chunk in stream:
             yield chunk
@@ -401,16 +421,32 @@ class PanzaNiceGUI:
             return
 
         self.status_label.text = "Running prompt..."
+        # clear both output areas
+        if self.generic_output_area is not None:
+            self.generic_output_area.value = ""
+            self.generic_output_area.update()
         self.output_area.value = ""
         self.status_label.update()
         self.output_area.update()
         await asyncio.sleep(0)
 
-        output = ""
-        stream = self._predict(prompt)
-        for chunk in self._streamer(stream):
-            output += chunk
-            self.output_area.value = output
+        # Stage 1: run pre-personalization writer to get generic output
+        generic_output = ""
+        pre_writer = self.pre_personalization_writer
+        stream1 = self._predict_with_writer(pre_writer, prompt)
+        for chunk in self._streamer(stream1):
+            generic_output += chunk
+            if self.generic_output_area is not None:
+                self.generic_output_area.value = generic_output
+                self.generic_output_area.update()
+            await asyncio.sleep(0)
+
+        # Stage 2: run main writer on the generic output and show Panza Output
+        panza_output = ""
+        stream2 = self._predict_with_writer(self.writer, generic_output or prompt)
+        for chunk in self._streamer(stream2):
+            panza_output += chunk
+            self.output_area.value = panza_output
             self.output_area.update()
             await asyncio.sleep(0)
 

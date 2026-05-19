@@ -10,3 +10,5 @@ defaults:
 # Either a full path to the checkpoint, or the 'latest' tag,
 # Which looks for the latest checkpoint in `checkpoint_dir`
 checkpoint: 'latest'
+use_pre_personalization_model: true
+pre_personalization_model_name_or_path: "Qwen/Qwen3.5-9B"
