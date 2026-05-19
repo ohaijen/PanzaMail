@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import hashlib
 import html
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
@@ -40,7 +42,7 @@ class PanzaNiceGUI:
     ):
         self.writer = writer
         # allow an explicit pre-personalization writer; fall back to the main writer
-        self.pre_personalization_writer = pre_personalization_writer
+        self.pre_personalization_writer = pre_personalization_writer or writer
         self.host = host
         self.port = port
         self.username = username
@@ -57,6 +59,21 @@ class PanzaNiceGUI:
                 self._find_evaluation_file_for_model(self.selected_model_path)
                 or self.default_evaluation_path
             )
+
+        self.snippet_tool_root = self._repo_root() / "panza_snippet_tool"
+        self.snippets_path = self.snippet_tool_root / "data" / "snippets.json"
+        self.review_state_path = self.snippet_tool_root / "data" / "review_state.json"
+        self.kept_jsonl_path = self.snippet_tool_root / "data" / "kept_snippets.jsonl"
+        self.kept_json_path = self.snippet_tool_root / "data" / "kept_snippets.json"
+        self.review_snippets: List[Dict[str, Any]] = []
+        self.review_state: Dict[str, Any] = {}
+        self.review_current_snippet: Optional[Dict[str, Any]] = None
+        self.review_tab = None
+        self.tabs = None
+        self.review_snippet_text = None
+        self.review_status_label = None
+        self.review_counts_label = None
+        self.review_source_label = None
 
         self.prompt_input = None
         self.output_area = None
@@ -255,16 +272,18 @@ class PanzaNiceGUI:
                 self.model_loading_status_label.update()
 
     def _build_interface(self) -> None:
-        ui.title("Panza")
+        #ui.title("Panza")
         ui.markdown("# Panza")
         ui.image(self.logo_path).style(
             "max-width: 240px; margin: 0 auto 24px; display: block;"
         )
 
         with ui.tabs().classes("w-full") as tabs:
+            self.tabs = tabs
             model_selector_tab = ui.tab("Model selector")
             inference_tab = ui.tab("Inference")
             training_data_tab = ui.tab("Training data")
+            self.review_tab = ui.tab("Add training data")
             automated_evaluation_tab = ui.tab("Automated evaluation")
 
         with ui.tab_panels(tabs, value=model_selector_tab).classes("w-full"):
@@ -274,6 +293,8 @@ class PanzaNiceGUI:
                 self._build_inference_tab()
             with ui.tab_panel(training_data_tab):
                 self._build_training_data_tab()
+            with ui.tab_panel(self.review_tab):
+                self._build_review_tab()
             with ui.tab_panel(automated_evaluation_tab):
                 self._build_automated_evaluation_tab()
 
@@ -351,8 +372,178 @@ class PanzaNiceGUI:
             ui.button("Next", on_click=self._next_training_data_page)
 
         self.training_data_status_label = ui.label("")
+        ui.button("Add more training data", on_click=self._open_review_tab).style(
+            "margin-top: 12px;"
+        )
         self.training_data_records_container = ui.column().classes("w-full gap-4")
         self._load_training_data()
+
+    def _open_review_tab(self) -> None:
+        if self.tabs is None or self.review_tab is None:
+            return
+        try:
+            self.tabs.value = self.review_tab
+        except Exception:
+            pass
+        try:
+            self.tabs.set_value(self.review_tab)
+        except Exception:
+            pass
+        try:
+            self.tabs.update()
+        except Exception:
+            pass
+
+    def _load_snippet_tool_state(self) -> None:
+        self.review_snippets = []
+        self.review_state = {}
+        self.review_current_snippet = None
+
+        if self.snippets_path.exists():
+            try:
+                snippets = json.loads(self.snippets_path.read_text(encoding="utf-8"))
+                if isinstance(snippets, list):
+                    self.review_snippets = snippets
+            except Exception:
+                self.review_snippets = []
+
+        if self.review_state_path.exists():
+            try:
+                state = json.loads(self.review_state_path.read_text(encoding="utf-8"))
+                if isinstance(state, dict):
+                    self.review_state = state
+            except Exception:
+                self.review_state = {}
+
+        if not isinstance(self.review_state.get("decisions"), dict):
+            self.review_state["decisions"] = {}
+
+        self.review_state.setdefault("updated_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        self.review_state.setdefault("dataset_sha256", self._compute_dataset_hash(self.snippets_path))
+        self._persist_review_state()
+        self._load_review_snippet()
+
+    def _compute_dataset_hash(self, path: Path) -> str:
+        if not path.exists():
+            return ""
+        try:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        except Exception:
+            return ""
+
+    def _persist_review_state(self) -> None:
+        self.review_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.review_state_path.write_text(
+            json.dumps(self.review_state, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _next_snippet(self) -> Optional[Dict[str, Any]]:
+        decisions = self.review_state.get("decisions", {})
+        for snippet in self.review_snippets:
+            sid = str(snippet.get("id", ""))
+            if sid and sid not in decisions:
+                return snippet
+        return None
+
+    def _export_kept_snippets(self) -> None:
+        decisions = self.review_state.get("decisions", {})
+        kept = [
+            s
+            for s in self.review_snippets
+            if decisions.get(str(s.get("id", ""))) == "keep"
+        ]
+        self.kept_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.kept_jsonl_path.open("w", encoding="utf-8") as fh:
+            for row in kept:
+                item = {
+                    "id": row.get("id"),
+                    "source_path": row.get("source_path"),
+                    "snippet_text": row.get("snippet_text"),
+                    "snippet_word_count": row.get("snippet_word_count"),
+                    "paragraph_count": row.get("paragraph_count"),
+                }
+                fh.write(json.dumps(item, ensure_ascii=False) + "\n")
+        self.kept_json_path.write_text(
+            json.dumps(kept, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _load_review_snippet(self) -> None:
+        self.review_current_snippet = self._next_snippet()
+        if self.review_current_snippet is None:
+            if self.review_snippet_text is not None:
+                self.review_snippet_text.value = "No more snippets to review."
+                self.review_snippet_text.update()
+            if self.review_status_label is not None:
+                self.review_status_label.text = "Review complete."
+                self.review_status_label.update()
+            if self.review_counts_label is not None:
+                self.review_counts_label.text = self._review_counts_text()
+                self.review_counts_label.update()
+            if self.review_source_label is not None:
+                self.review_source_label.text = ""
+                self.review_source_label.update()
+            return
+
+        if self.review_snippet_text is not None:
+            snippet_text = str(self.review_current_snippet.get("snippet_text", ""))
+            self.review_snippet_text.value = snippet_text
+            self.review_snippet_text.update()
+        if self.review_status_label is not None:
+            idx = len(self.review_state.get("decisions", {})) + 1
+            total = len(self.review_snippets)
+            self.review_status_label.text = f"Snippet {idx} of {total}"
+            self.review_status_label.update()
+        if self.review_counts_label is not None:
+            self.review_counts_label.text = self._review_counts_text()
+            self.review_counts_label.update()
+        if self.review_source_label is not None:
+            self.review_source_label.text = str(self.review_current_snippet.get("source_path", ""))
+            self.review_source_label.update()
+
+    def _review_action(self, decision: str) -> None:
+        if self.review_current_snippet is None:
+            return
+        sid = str(self.review_current_snippet.get("id", ""))
+        if not sid:
+            return
+        self.review_state.setdefault("decisions", {})[sid] = decision
+        self.review_state["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        self._persist_review_state()
+        self._export_kept_snippets()
+        self._load_review_snippet()
+
+    def _review_counts_text(self) -> str:
+        decisions = self.review_state.get("decisions", {})
+        kept = sum(1 for v in decisions.values() if v == "keep")
+        deleted = sum(1 for v in decisions.values() if v == "delete")
+        total = len(self.review_snippets)
+        pending = max(total - kept - deleted, 0)
+        return f"Total: {total} | Kept: {kept} | Deleted: {deleted} | Pending: {pending}"
+
+    def _build_review_tab(self) -> None:
+        self._load_snippet_tool_state()
+        ui.label("Review candidate snippets and keep the ones you want to add to training data.").classes(
+            "text-sm text-gray-600"
+        )
+        self.review_status_label = ui.label("")
+        self.review_counts_label = ui.label("")
+        self.review_source_label = ui.label("")
+        with ui.row().classes("w-full gap-4 items-center").style("margin-bottom: 12px;"):
+            ui.button("Keep", on_click=lambda: self._review_action("keep")).props("color=positive")
+            ui.button("Delete", on_click=lambda: self._review_action("delete")).props("color=negative")
+            ui.button("Export kept snippets", on_click=self._export_kept_snippets).props("color=secondary")
+        # Use a readonly textarea so the content can be updated dynamically
+        self.review_snippet_text = (
+            ui.textarea(
+                value="",
+            )
+            .props("readonly")
+            .classes("w-full")
+            .style("white-space: pre-wrap; background:#f8fafc; padding:12px; border-radius:8px; min-height:160px;")
+        )
+        self._load_review_snippet()
 
     def _build_automated_evaluation_tab(self) -> None:
         default_path = str(self.default_evaluation_path or "")
