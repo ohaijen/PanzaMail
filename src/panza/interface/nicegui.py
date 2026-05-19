@@ -255,6 +255,7 @@ class PanzaNiceGUI:
                 self.model_loading_status_label.update()
 
     def _build_interface(self) -> None:
+        ui.title("Panza")
         ui.markdown("# Panza")
         ui.image(self.logo_path).style(
             "max-width: 240px; margin: 0 auto 24px; display: block;"
