@@ -67,10 +67,11 @@ class PanzaNiceGUI:
         self.kept_json_path = self.snippet_tool_root / "data" / "kept_snippets.json"
         self.review_snippets: List[Dict[str, Any]] = []
         self.review_state: Dict[str, Any] = {}
-        self.review_current_snippet: Optional[Dict[str, Any]] = None
-        self.review_tab = None
-        self.tabs = None
-        self.review_snippet_text = None
+        self.review_docs_by_source: Dict[str, List[Dict[str, Any]]] = {}
+        self.review_document_paths: List[str] = []
+        self.review_doc_index: int = 0
+        self.review_current_source: Optional[str] = None
+        self.review_cards_container = None
         self.review_status_label = None
         self.review_counts_label = None
         self.review_source_label = None
@@ -397,7 +398,10 @@ class PanzaNiceGUI:
     def _load_snippet_tool_state(self) -> None:
         self.review_snippets = []
         self.review_state = {}
-        self.review_current_snippet = None
+        self.review_docs_by_source = {}
+        self.review_document_paths = []
+        self.review_doc_index = 0
+        self.review_current_source = None
 
         if self.snippets_path.exists():
             try:
@@ -421,6 +425,16 @@ class PanzaNiceGUI:
         self.review_state.setdefault("updated_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         self.review_state.setdefault("dataset_sha256", self._compute_dataset_hash(self.snippets_path))
         self._persist_review_state()
+
+        self.review_docs_by_source = {}
+        self.review_document_paths = []
+        for snippet in self.review_snippets:
+            source_path = str(snippet.get("source_path", "Unknown"))
+            if source_path not in self.review_docs_by_source:
+                self.review_docs_by_source[source_path] = []
+                self.review_document_paths.append(source_path)
+            self.review_docs_by_source[source_path].append(snippet)
+
         self._load_review_snippet()
 
     def _compute_dataset_hash(self, path: Path) -> str:
@@ -438,12 +452,12 @@ class PanzaNiceGUI:
             encoding="utf-8",
         )
 
-    def _next_snippet(self) -> Optional[Dict[str, Any]]:
+    def _next_document_index(self) -> Optional[int]:
         decisions = self.review_state.get("decisions", {})
-        for snippet in self.review_snippets:
-            sid = str(snippet.get("id", ""))
-            if sid and sid not in decisions:
-                return snippet
+        for index, source_path in enumerate(self.review_document_paths):
+            snippets = self.review_docs_by_source.get(source_path, [])
+            if any(str(snippet.get("id", "")) not in decisions for snippet in snippets):
+                return index
         return None
 
     def _export_kept_snippets(self) -> None:
@@ -470,11 +484,12 @@ class PanzaNiceGUI:
         )
 
     def _load_review_snippet(self) -> None:
-        self.review_current_snippet = self._next_snippet()
-        if self.review_current_snippet is None:
-            if self.review_snippet_text is not None:
-                self.review_snippet_text.value = "No more snippets to review."
-                self.review_snippet_text.update()
+        next_index = self._next_document_index()
+        if next_index is None:
+            if self.review_cards_container is not None:
+                self.review_cards_container.clear()
+                with self.review_cards_container:
+                    ui.label("No more snippets to review.").classes("text-sm text-gray-600")
             if self.review_status_label is not None:
                 self.review_status_label.text = "Review complete."
                 self.review_status_label.update()
@@ -486,29 +501,53 @@ class PanzaNiceGUI:
                 self.review_source_label.update()
             return
 
-        if self.review_snippet_text is not None:
-            snippet_text = str(self.review_current_snippet.get("snippet_text", ""))
-            self.review_snippet_text.value = snippet_text
-            self.review_snippet_text.update()
+        self.review_doc_index = next_index
+        self.review_current_source = self.review_document_paths[self.review_doc_index]
+        snippets = self.review_docs_by_source.get(self.review_current_source, [])
+
+        if self.review_source_label is not None:
+            self.review_source_label.text = self.review_current_source
+            self.review_source_label.update()
         if self.review_status_label is not None:
-            idx = len(self.review_state.get("decisions", {})) + 1
-            total = len(self.review_snippets)
-            self.review_status_label.text = f"Snippet {idx} of {total}"
+            self.review_status_label.text = f"Document {self.review_doc_index + 1} of {len(self.review_document_paths)}"
             self.review_status_label.update()
         if self.review_counts_label is not None:
             self.review_counts_label.text = self._review_counts_text()
             self.review_counts_label.update()
-        if self.review_source_label is not None:
-            self.review_source_label.text = str(self.review_current_snippet.get("source_path", ""))
-            self.review_source_label.update()
 
-    def _review_action(self, decision: str) -> None:
-        if self.review_current_snippet is None:
+        if self.review_cards_container is not None:
+            self.review_cards_container.clear()
+            with self.review_cards_container:
+                for snippet in snippets:
+                    snippet_id = str(snippet.get("id", ""))
+                    decision = self.review_state.get("decisions", {}).get(snippet_id, "pending")
+                    card_style = ""
+                    if decision == "keep":
+                        card_style = "background-color: #e6ffed;"
+                    elif decision == "delete":
+                        card_style = "background-color: #ffe4ec;"
+                    with ui.card().classes("w-full p-4 mb-4").style(card_style):
+                        ui.markdown(f"**Snippet ID:** {snippet_id or 'unknown'}")
+                        ui.markdown(f"**Decision:** {decision}")
+                        ui.textarea(
+                            value=str(snippet.get("snippet_text", "")),
+                        ).props("readonly").classes("w-full").style(
+                            "min-height: 120px; white-space: pre-wrap; margin-bottom: 8px;"
+                        )
+                        with ui.row().classes("w-full gap-4"):
+                            ui.button(
+                                "Keep",
+                                on_click=lambda current_id=snippet_id: self._review_action("keep", current_id),
+                            ).props("color=positive")
+                            ui.button(
+                                "Delete",
+                                on_click=lambda current_id=snippet_id: self._review_action("delete", current_id),
+                            ).props("color=negative")
+
+    def _review_action(self, decision: str, snippet_id: str) -> None:
+        if not snippet_id:
             return
-        sid = str(self.review_current_snippet.get("id", ""))
-        if not sid:
-            return
-        self.review_state.setdefault("decisions", {})[sid] = decision
+        self.review_state.setdefault("decisions", {})[snippet_id] = decision
         self.review_state["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         self._persist_review_state()
         self._export_kept_snippets()
@@ -531,19 +570,18 @@ class PanzaNiceGUI:
         self.review_counts_label = ui.label("")
         self.review_source_label = ui.label("")
         with ui.row().classes("w-full gap-4 items-center").style("margin-bottom: 12px;"):
-            ui.button("Keep", on_click=lambda: self._review_action("keep")).props("color=positive")
-            ui.button("Delete", on_click=lambda: self._review_action("delete")).props("color=negative")
             ui.button("Export kept snippets", on_click=self._export_kept_snippets).props("color=secondary")
-        # Use a readonly textarea so the content can be updated dynamically
-        self.review_snippet_text = (
-            ui.textarea(
-                value="",
-            )
-            .props("readonly")
-            .classes("w-full")
-            .style("white-space: pre-wrap; background:#f8fafc; padding:12px; border-radius:8px; min-height:160px;")
-        )
+            ui.label("").style("flex:1")
+            self.review_counts_label = ui.label("")
+        with ui.row().classes("w-full gap-4 items-center").style("margin-bottom: 12px;"):
+            ui.label("Current document:").classes("font-semibold")
+            self.review_source_label = ui.label("")
+            ui.label("").style("flex:1")
+            self.review_status_label = ui.label("")
+        self.review_cards_container = ui.column().classes("w-full gap-4")
         self._load_review_snippet()
+        with ui.row().classes("w-full gap-4 items-center").style("margin-top: 12px;"):
+            ui.button("Export kept snippets", on_click=self._export_kept_snippets).props("color=secondary")
 
     def _build_automated_evaluation_tab(self) -> None:
         default_path = str(self.default_evaluation_path or "")
