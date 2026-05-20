@@ -76,6 +76,14 @@ class PanzaNiceGUI:
         self.review_counts_label = None
         self.review_source_label = None
 
+        self.file_selector_root = Path("/nfs/scistore19/alistgrp/eiofinov/PanzaMail-snippets")
+        if not self.file_selector_root.exists():
+            self.file_selector_root = self._repo_root()
+        self.file_tree_container = None
+        self.selected_file_path_label = None
+        self.selected_file_viewer = None
+        self.selected_file_path: Optional[Path] = None
+
         self.prompt_input = None
         self.output_area = None
         self.generic_output_area = None
@@ -443,6 +451,54 @@ class PanzaNiceGUI:
         except Exception:
             return ""
 
+    def _select_file(self, path: Path) -> None:
+        self.selected_file_path = path
+        content = ""
+        try:
+            content = path.read_text(encoding="utf-8")
+        except Exception:
+            try:
+                content = path.read_text(encoding="latin-1")
+            except Exception as exc:
+                content = f"Could not read file: {exc}"
+        if self.selected_file_path_label is not None:
+            self.selected_file_path_label.text = str(path)
+            self.selected_file_path_label.update()
+        if self.selected_file_viewer is not None:
+            self.selected_file_viewer.value = content
+            self.selected_file_viewer.update()
+
+    def _render_file_tree(self, path: Path, container: Any, depth: int = 0) -> None:
+        try:
+            entries = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        except Exception:
+            ui.label(f"Unable to read directory: {path}").classes("text-sm text-red-600")
+            return
+
+        for entry in entries:
+            if entry.is_dir():
+                with container:
+                    ui.label(entry.name).classes("font-semibold").style(
+                        f"margin-left: {depth * 16}px;"
+                    )
+                self._render_file_tree(entry, container, depth + 1)
+            elif entry.suffix.lower() in {".txt", ".rtf"}:
+                ui.button(
+                    entry.name,
+                    on_click=lambda selected_path=entry: self._select_file(selected_path),
+                ).props("flat").classes("w-full text-left").style(
+                    f"margin-left: {(depth + 1) * 16}px;"
+                )
+
+    def _load_file_tree(self) -> None:
+        if self.file_tree_container is None:
+            return
+        self.file_tree_container.clear()
+        if not self.file_selector_root.exists():
+            ui.label(f"Directory not found: {self.file_selector_root}").classes("text-sm text-red-600")
+            return
+        self._render_file_tree(self.file_selector_root, self.file_tree_container)
+
     def _persist_review_state(self) -> None:
         self.review_state_path.parent.mkdir(parents=True, exist_ok=True)
         self.review_state_path.write_text(
@@ -617,6 +673,19 @@ class PanzaNiceGUI:
 
     def _build_review_tab(self) -> None:
         self._load_snippet_tool_state()
+        ui.label("File selector").classes("text-sm text-gray-600")
+        with ui.row().classes("w-full gap-4").style("margin-bottom: 16px; align-items: flex-start;"):
+            with ui.column().classes("w-1/3").style("max-height: 420px; overflow:auto; border:1px solid #ddd; padding: 12px; background:#fafafa;"):
+                ui.label(f"Base directory: {self.file_selector_root}").classes("text-sm text-gray-600")
+                self.file_tree_container = ui.column().classes("w-full gap-2")
+                self._load_file_tree()
+            with ui.column().classes("w-2/3").style("min-height: 420px;"):
+                ui.label("Selected file preview").classes("text-sm text-gray-600")
+                self.selected_file_path_label = ui.label("No file selected").classes("text-sm text-gray-600")
+                self.selected_file_viewer = ui.textarea(
+                    value="",
+                ).props("readonly").style("width: 100%; min-height: 360px;")
+
         ui.label("Review candidate snippets and keep the ones you want to add to training data. All candidates are shown below grouped by document path.").classes(
             "text-sm text-gray-600"
         )
