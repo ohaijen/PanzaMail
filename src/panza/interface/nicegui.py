@@ -435,8 +435,6 @@ class PanzaNiceGUI:
                 self.review_document_paths.append(source_path)
             self.review_docs_by_source[source_path].append(snippet)
 
-        self._load_review_snippet()
-
     def _compute_dataset_hash(self, path: Path) -> str:
         if not path.exists():
             return ""
@@ -484,70 +482,126 @@ class PanzaNiceGUI:
         )
 
     def _load_review_snippet(self) -> None:
-        next_index = self._next_document_index()
-        if next_index is None:
-            if self.review_cards_container is not None:
-                self.review_cards_container.clear()
-                with self.review_cards_container:
-                    ui.label("No more snippets to review.").classes("text-sm text-gray-600")
+        if self.review_cards_container is None:
+            return
+
+        self.review_cards_container.clear()
+        total_docs = len(self.review_document_paths)
+        total_snippets = len(self.review_snippets)
+
+        if total_snippets == 0:
+            with self.review_cards_container:
+                ui.label("No candidate snippets to review.").classes("text-sm text-gray-600")
             if self.review_status_label is not None:
-                self.review_status_label.text = "Review complete."
+                self.review_status_label.text = "No snippets available."
                 self.review_status_label.update()
             if self.review_counts_label is not None:
                 self.review_counts_label.text = self._review_counts_text()
                 self.review_counts_label.update()
             if self.review_source_label is not None:
-                self.review_source_label.text = ""
+                self.review_source_label.text = "0"
                 self.review_source_label.update()
             return
 
-        self.review_doc_index = next_index
-        self.review_current_source = self.review_document_paths[self.review_doc_index]
-        snippets = self.review_docs_by_source.get(self.review_current_source, [])
-
         if self.review_source_label is not None:
-            self.review_source_label.text = self.review_current_source
+            self.review_source_label.text = str(total_docs)
             self.review_source_label.update()
         if self.review_status_label is not None:
-            self.review_status_label.text = f"Document {self.review_doc_index + 1} of {len(self.review_document_paths)}"
+            self.review_status_label.text = f"Total snippets: {total_snippets}"
             self.review_status_label.update()
         if self.review_counts_label is not None:
             self.review_counts_label.text = self._review_counts_text()
             self.review_counts_label.update()
 
-        if self.review_cards_container is not None:
-            self.review_cards_container.clear()
-            with self.review_cards_container:
-                for snippet in snippets:
-                    snippet_id = str(snippet.get("id", ""))
-                    decision = self.review_state.get("decisions", {}).get(snippet_id, "pending")
-                    card_style = ""
-                    if decision == "keep":
-                        card_style = "background-color: #e6ffed;"
-                    elif decision == "delete":
-                        card_style = "background-color: #ffe4ec;"
-                    with ui.card().classes("w-full p-4 mb-4").style(card_style):
-                        ui.markdown(f"**Snippet ID:** {snippet_id or 'unknown'}")
-                        ui.markdown(f"**Decision:** {decision}")
-                        ui.textarea(
-                            value=str(snippet.get("snippet_text", "")),
-                        ).props("readonly").classes("w-full").style(
-                            "min-height: 120px; white-space: pre-wrap; margin-bottom: 8px;"
-                        )
-                        with ui.row().classes("w-full gap-4"):
-                            ui.button(
-                                "Keep",
-                                on_click=lambda current_id=snippet_id: self._review_action("keep", current_id),
-                            ).props("color=positive")
-                            ui.button(
-                                "Delete",
-                                on_click=lambda current_id=snippet_id: self._review_action("delete", current_id),
-                            ).props("color=negative")
+        with self.review_cards_container:
+            for source_path in self.review_document_paths:
+                snippets = self.review_docs_by_source.get(source_path, [])
+                with ui.card().classes("w-full p-4 mb-4"):
+                    ui.markdown(f"### {source_path}")
+                    ui.label(f"{len(snippets)} candidate snippet(s)").classes("text-sm text-gray-600")
+                    with ui.row().classes("w-full gap-4 items-center").style("margin-top: 12px;"):
+                        async def keep_all_click(current_source=source_path):
+                            keep_all_button.enabled = False
+                            keep_all_button.update()
+                            await asyncio.sleep(0)
+                            await self._review_action_bulk("keep", current_source)
 
-    def _review_action(self, decision: str, snippet_id: str) -> None:
+                        async def delete_all_click(current_source=source_path):
+                            delete_all_button.enabled = False
+                            delete_all_button.update()
+                            await asyncio.sleep(0)
+                            await self._review_action_bulk("delete", current_source)
+
+                        keep_all_button = ui.button(
+                            "Keep all",
+                            on_click=keep_all_click,
+                        ).props("color=positive")
+                        delete_all_button = ui.button(
+                            "Delete all",
+                            on_click=delete_all_click,
+                        ).props("color=negative")
+                        ui.label("").style("flex:1")
+                    with ui.column().classes("w-full gap-4 mt-4"):
+                        for snippet in snippets:
+                            snippet_id = str(snippet.get("id", ""))
+                            decision = self.review_state.get("decisions", {}).get(snippet_id, "pending")
+                            card_style = ""
+                            if decision == "keep":
+                                card_style = "background-color: #e6ffed;"
+                            elif decision == "delete":
+                                card_style = "background-color: #ffe4ec;"
+                            with ui.card().classes("w-full p-4").style(card_style) as card:
+                                ui.markdown(f"**Snippet ID:** {snippet_id or 'unknown'}")
+                                ui.markdown(f"**Decision:** {decision}")
+                                ui.textarea(
+                                    value=str(snippet.get("snippet_text", "")),
+                                ).props("readonly").classes("w-full").style(
+                                    "min-height: 120px; white-space: pre-wrap; margin-bottom: 8px;"
+                                )
+                                with ui.row().classes("w-full gap-4 items-center"):
+                                    async def keep_click(current_id=snippet_id, snippet_card=card):
+                                        snippet_card.style("background-color: #d3d3d3;")
+                                        snippet_card.update()
+                                        keep_button.enabled = False
+                                        keep_button.update()
+                                        await asyncio.sleep(0)
+                                        await self._review_action("keep", current_id)
+
+                                    async def delete_click(current_id=snippet_id, snippet_card=card):
+                                        snippet_card.style("background-color: #d3d3d3;")
+                                        snippet_card.update()
+                                        delete_button.enabled = False
+                                        delete_button.update()
+                                        await asyncio.sleep(0)
+                                        await self._review_action("delete", current_id)
+
+                                    keep_button = ui.button(
+                                        "Keep",
+                                        on_click=keep_click,
+                                    ).props("color=positive")
+                                    delete_button = ui.button(
+                                        "Delete",
+                                        on_click=delete_click,
+                                    ).props("color=negative")
+
+    async def _review_action(self, decision: str, snippet_id: str) -> None:
         if not snippet_id:
             return
         self.review_state.setdefault("decisions", {})[snippet_id] = decision
+        self.review_state["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        self._persist_review_state()
+        self._export_kept_snippets()
+        self._load_review_snippet()
+
+    async def _review_action_bulk(self, decision: str, source_path: str) -> None:
+        if not source_path:
+            return
+        snippets = self.review_docs_by_source.get(source_path, [])
+        decisions = self.review_state.setdefault("decisions", {})
+        for snippet in snippets:
+            snippet_id = str(snippet.get("id", ""))
+            if snippet_id:
+                decisions[snippet_id] = decision
         self.review_state["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         self._persist_review_state()
         self._export_kept_snippets()
@@ -563,7 +617,7 @@ class PanzaNiceGUI:
 
     def _build_review_tab(self) -> None:
         self._load_snippet_tool_state()
-        ui.label("Review candidate snippets and keep the ones you want to add to training data.").classes(
+        ui.label("Review candidate snippets and keep the ones you want to add to training data. All candidates are shown below grouped by document path.").classes(
             "text-sm text-gray-600"
         )
         self.review_status_label = ui.label("")
@@ -574,9 +628,9 @@ class PanzaNiceGUI:
             ui.label("").style("flex:1")
             self.review_counts_label = ui.label("")
         with ui.row().classes("w-full gap-4 items-center").style("margin-bottom: 12px;"):
-            ui.label("Current document:").classes("font-semibold")
+            ui.label("Documents:").classes("font-semibold")
             self.review_source_label = ui.label("")
-            ui.label("").style("flex:1")
+            ui.label("Total snippets:").classes("font-semibold")
             self.review_status_label = ui.label("")
         self.review_cards_container = ui.column().classes("w-full gap-4")
         self._load_review_snippet()
