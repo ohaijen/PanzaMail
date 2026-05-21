@@ -4,6 +4,7 @@ username: "david_anonymous"  # This identifies the user in the users directory a
 data_dir: ${panza_workspace}/data/david_anonymous
 
 system_preamble_path: ${panza_workspace}/prompt_preambles/system_preamble.txt
+pre_personalization_system_preamble_path: ${panza_workspace}/prompt_preambles/system_preamble.txt
 user_preamble_path: ${panza_workspace}/prompt_preambles/david_preamble.txt
 rag_preamble_path: ${panza_workspace}/prompt_preambles/rag_preamble.txt
 thread_preamble_path: ${panza_workspace}/prompt_preambles/thread_preamble.txt
