@@ -39,20 +39,20 @@ class LocalLLM(LLM):
         load_in_4bit: bool,
         remove_prompt_from_stream: bool,
     ):
+        self.load_in_4bit = load_in_4bit
         self._check_installation()
 
         super().__init__(name, sampling_parameters)
         self.checkpoint = checkpoint
-        self.device = device
+        self.device, self.device_map = self._resolve_device(device)
 
         assert dtype in [None, "fp32", "bf16"]
-        if device == "cpu":
+        if self.device.type == "cpu":
             assert dtype == "fp32", "CPU only supports fp32, please specify --dtype fp32"
         dtype = None if dtype is None else (torch.float32 if dtype == "fp32" else torch.bfloat16)
         self.dtype = dtype
 
         self.remove_prompt_from_stream = remove_prompt_from_stream
-        self.load_in_4bit = load_in_4bit
         self.quantization_config = (
             BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -77,11 +77,12 @@ class LocalLLM(LLM):
         )
         model_inputs = encodeds.to(self.device)
 
-        generated_ids = self.model.generate(
-            **model_inputs,
-            **self.sampling_parameters,
-            pad_token_id=self.tokenizer.pad_token_id,
-        )
+        with torch.inference_mode():
+            generated_ids = self.model.generate(
+                **model_inputs,
+                **self.sampling_parameters,
+                pad_token_id=self.tokenizer.pad_token_id,
+            )
 
         prompt_length = encodeds["input_ids"].shape[1]
         outputs = self.tokenizer.batch_decode(
@@ -116,7 +117,11 @@ class LocalLLM(LLM):
         )
         from threading import Thread
 
-        thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
+        def _generate():
+            with torch.inference_mode():
+                self.model.generate(**generation_kwargs)
+
+        thread = Thread(target=_generate)
         thread.start()
         return streamer
 
@@ -126,7 +131,7 @@ class LocalLLM(LLM):
                 "transformers is not installed. Please install it with `pip install transformers`."
             )
 
-        if BitsAndBytesConfig is None:
+        if self.load_in_4bit and BitsAndBytesConfig is None:
             from transformers import __version__ as version
 
             raise ImportError(
@@ -135,9 +140,11 @@ class LocalLLM(LLM):
 
     def _load_model_and_tokenizer_with_constructor(self, model_class: Type[Any]) -> None:
         if self.load_in_4bit:
+            if self.device.type != "cuda":
+                raise ValueError("4-bit loading is only supported with CUDA.")
             self.model = model_class.from_pretrained(
                 self.checkpoint,
-                device_map=self.device,
+                device_map="auto",
                 quantization_config=self.quantization_config,
                 trust_remote_code=True,
             )
@@ -145,9 +152,10 @@ class LocalLLM(LLM):
             self.model = model_class.from_pretrained(
                 self.checkpoint,
                 torch_dtype=self.dtype,
-                device_map=self.device,
                 trust_remote_code=True,
             )
+            self.model.to(self.device)
+        self.model.eval()
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.checkpoint, model_max_length=self.model.config.max_position_embeddings
@@ -158,6 +166,31 @@ class LocalLLM(LLM):
     @abstractmethod
     def _load_model_and_tokenizer(self) -> None:
         pass
+
+    def _resolve_device(self, device: str) -> tuple[torch.device, str]:
+        normalized = device.lower().strip()
+
+        if normalized == "mlx":
+            if not torch.backends.mps.is_available():
+                raise ValueError(
+                    "device='mlx' requested but MPS is not available on this machine."
+                )
+            return torch.device("mps"), "mps"
+
+        if normalized == "mps":
+            if not torch.backends.mps.is_available():
+                raise ValueError("device='mps' requested but MPS is not available.")
+            return torch.device("mps"), "mps"
+
+        if normalized == "cuda":
+            if not torch.cuda.is_available():
+                raise ValueError("device='cuda' requested but CUDA is not available.")
+            return torch.device("cuda"), "cuda"
+
+        if normalized == "cpu":
+            return torch.device("cpu"), "cpu"
+
+        raise ValueError("Unsupported device. Use one of: cpu, cuda, mps, mlx")
 
 
 class TransformersLLM(LocalLLM):

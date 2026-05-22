@@ -12,11 +12,11 @@ summarized_emails_path: ${user.data_dir}/${user.username}_clean_summarized.jsonl
 
 rag_db_dir: ${user.data_dir}
 
-checkpoint: "microsoft/Phi-3-mini-4k-instruct" 
+checkpoint: "Qwen/Qwen3-4B-Instruct-2507" 
 force_extract_clean_emails: false # If false, data will not be recreated if it already exists.
 
  # Parameters for train-test split, if required.
-test_split: 0.
+test_split: 0.2
 split_type: random # Options are 'random', 'chronological'.
 
 # Parameters for RAG database.

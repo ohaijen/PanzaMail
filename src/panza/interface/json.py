@@ -5,60 +5,64 @@ import json
 import numpy as np
 import os
 import re
+import time
 from tqdm import tqdm
 
-from evaluate import load
-from torchmetrics.text.bleu import BLEUScore
-from torchmetrics.text.rouge import ROUGEScore
 import string
-import nltk
-
-# Ensure that tokenizer has been downloaded to ensure script does not fail.
-try:
-    nltk.find("tokenizers/punkt_tab")
-except:
-    print("punkt_tab was not downloaded. Installing.")
-    nltk.download("punkt_tab")
 
 punc_table = str.maketrans({key: None for key in string.punctuation})
-rouge = ROUGEScore()
-bleu1 = BLEUScore(n_gram=1)
-bleu2 = BLEUScore(n_gram=2)
-bleu3 = BLEUScore(n_gram=3)
-bleu4 = BLEUScore(n_gram=4)
-mauve = load("mauve")
+_METRICS_TOOLS = None
+
+
+def get_metrics_tools():
+    global _METRICS_TOOLS
+    if _METRICS_TOOLS is None:
+        from evaluate import load
+        from torchmetrics.text.bleu import BLEUScore
+        from torchmetrics.text.rouge import ROUGEScore
+
+        _METRICS_TOOLS = {
+            "rouge": ROUGEScore(),
+            "bleu": [BLEUScore(n_gram=n) for n in [1, 2, 3, 4]],
+            #"mauve": load("mauve"),
+        }
+    return _METRICS_TOOLS
 
 
 def compute_rouge_scores(predictions, goldens):
+    tools = get_metrics_tools()
     goldens = [" ".join(x.translate(punc_table).lower().split()) for x in goldens]
     candidates = [
         " ".join(prediction.translate(punc_table).lower().split()) for prediction in predictions
     ]
     scores = [
-        {k: v.item() for k, v in rouge(candidate, goldens).items()} for candidate in candidates
+        {k: v.item() for k, v in tools["rouge"](candidate, goldens).items()}
+        for candidate in candidates
     ]
     return scores
 
 
 def compute_bleu_scores(predictions, goldens):
+    tools = get_metrics_tools()
     goldens = [" ".join(x.translate(punc_table).lower().split()) for x in goldens]
     candidates = [
         " ".join(prediction.translate(punc_table).lower().split()) for prediction in predictions
     ]
     bleu_scores = [
-        np.mean([bleu([candidate], [goldens]) for bleu in [bleu1, bleu2, bleu3, bleu4]])
+        np.mean([bleu([candidate], [goldens]) for bleu in tools["bleu"]])
         for candidate in candidates
     ]
     return [s.item() for s in bleu_scores]
 
 
-def compute_mauve_score(predictions, goldens):
-    predictions = [
-        prediction for nested_prediction in predictions for prediction in nested_prediction
-    ]
-    goldens = [golden for nested_golden in goldens for golden in nested_golden]
-    mauve_score = mauve.compute(predictions=predictions, references=goldens)
-    return mauve_score
+# def compute_mauve_score(predictions, goldens):
+#     tools = get_metrics_tools()
+#     predictions = [
+#         prediction for nested_prediction in predictions for prediction in nested_prediction
+#     ]
+#     goldens = [golden for nested_golden in goldens for golden in nested_golden]
+#     mauve_score = tools["mauve"].compute(predictions=predictions, references=goldens)
+#     return mauve_score
 
 
 class PanzaJSON:
@@ -145,7 +149,7 @@ class PanzaJSON:
                 for i, r in enumerate(responses):
                     r["full_prompt"] = full_prompts[i]
                     r["panza_responses"].append(outputs[i])
-                all_responses += responses
+            all_responses += responses
         return all_responses, has_goldens
 
     def do_compute_metrics(self, all_responses):
@@ -164,10 +168,10 @@ class PanzaJSON:
                 cat: np.mean([s[cat] for r in all_responses for s in r["scores"]["ROUGE"]])
                 for cat in rouge_categories
             },
-            "MAUVE": compute_mauve_score(
-                [r["panza_responses"] for r in all_responses],
-                [r["golden_responses"] for r in all_responses],
-            ).mauve,
+            # "MAUVE": compute_mauve_score(
+            #     [r["panza_responses"] for r in all_responses],
+            #     [r["golden_responses"] for r in all_responses],
+            # ).mauve,
         }
         print("########## Aggregated quality metrics ##########\n")
         print(json.dumps(aggregate_metrics, indent=2))
@@ -186,12 +190,18 @@ class PanzaJSON:
         username: str,
     ):
         self.writer = writer
+        infer_start = time.perf_counter()
         responses, has_goldens = self.assemble_responses(
             input_file, batch_size, use_thread, responses_per_prompt
         )
+        infer_elapsed = time.perf_counter() - infer_start
+        print(f"Inference completed in {infer_elapsed:.2f}s")
         if compute_metrics:
             if has_goldens:
+                metrics_start = time.perf_counter()
                 responses = self.do_compute_metrics(responses)
+                metrics_elapsed = time.perf_counter() - metrics_start
+                print(f"Metrics completed in {metrics_elapsed:.2f}s")
             else:
                 print(
                     "Warning: metrics requested but no golden labels given!",

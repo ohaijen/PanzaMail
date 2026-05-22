@@ -24,9 +24,17 @@ TOP_K = 50
 
 class LLMSummarizer:
     def __init__(
-        self, model, dtype, temperature, top_k, top_p, summarization_prompt, load_in_4bit
+        self,
+        model,
+        dtype,
+        temperature,
+        top_k,
+        top_p,
+        summarization_prompt,
+        load_in_4bit,
+        device=None,
     ) -> None:
-        self.device = "cuda"
+        self.device = self._resolve_device(device or os.environ.get("PANZA_DEVICE", "cuda"))
 
         if load_in_4bit:
             quant_config = BitsAndBytesConfig(
@@ -66,6 +74,26 @@ class LLMSummarizer:
         self.top_k = top_k
         self.top_p = top_p
 
+    def _resolve_device(self, device: str) -> str:
+        normalized = device.lower().strip()
+        if normalized == "mlx":
+            if not torch.backends.mps.is_available():
+                raise ValueError(
+                    "device='mlx' requested but MPS is not available on this machine."
+                )
+            return "mps"
+        if normalized == "mps":
+            if not torch.backends.mps.is_available():
+                raise ValueError("device='mps' requested but MPS is not available.")
+            return "mps"
+        if normalized == "cuda":
+            if not torch.cuda.is_available():
+                raise ValueError("device='cuda' requested but CUDA is not available.")
+            return "cuda"
+        if normalized == "cpu":
+            return "cpu"
+        raise ValueError("Unsupported device. Use one of: cpu, cuda, mps, mlx")
+
     def prepare_batch_for_inference(self, emails: List[Dict]) -> List[Text]:
         batch_with_prompt = []
         for item in emails:
@@ -75,7 +103,8 @@ class LLMSummarizer:
 
     def run_inference(self, emails: List[Dict]) -> List[Dict]:
         gc.collect()
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         batch = self.prepare_batch_for_inference(emails)
 
         model_inputs = self.tokenizer.apply_chat_template(
@@ -161,6 +190,12 @@ def main():
         action="store_true",
         help="Whether to use FP32 precision for computation",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=os.environ.get("PANZA_DEVICE", "cuda"),
+        help="Inference device: cuda, cpu, mps, or mlx (alias for mps).",
+    )
     args = parser.parse_args()
 
     assert args.path_to_emails.endswith(
@@ -196,6 +231,7 @@ def main():
         top_k=TOP_K,
         summarization_prompt=summarization_prompt,
         load_in_4bit=args.load_in_4bit,
+        device=args.device,
     )
 
     # Generate synthetic instructions

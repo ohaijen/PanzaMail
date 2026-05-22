@@ -51,31 +51,32 @@ def load_documents(data_path: str) -> None:
 def generate_synthetic_instructions(
     documents: List[Document], writer: PanzaWriter, batch_size: int, output_path: str
 ) -> None:
-    num_processed_documents = 0
-    num_batches = (len(documents) - 1) // batch_size + 1
-    start_time = time.time()
-    with open(output_path, "w") as f:
-        for i in tqdm(range(0, len(documents), batch_size)):
-            print(f"--> Processing batch {i // batch_size + 1}/{num_batches}")
-            batch = documents[i : i + batch_size]
-            instructions = [
-                SummarizationInstruction(instruction=document.email) for document in batch
-            ]
+    pass
+    # num_processed_documents = 0
+    # num_batches = (len(documents) - 1) // batch_size + 1
+    # start_time = time.time()
+    # with open(output_path, "w") as f:
+    #     for i in tqdm(range(0, len(documents), batch_size)):
+    #         print(f"--> Processing batch {i // batch_size + 1}/{num_batches}")
+    #         batch = documents[i : i + batch_size]
+    #         instructions = [
+    #             SummarizationInstruction(instruction=document.email) for document in batch
+    #         ]
 
-            summaries = writer.run_batch(instructions)
-            num_processed_documents += len(summaries)
+    #         summaries = writer.run_batch(instructions)
+    #         num_processed_documents += len(summaries)
 
-            for it, summary in enumerate(summaries):
-                # Considerf adding cleaning and filtering here.
-                batch[it].summary = summary
+    #         for it, summary in enumerate(summaries):
+    #             # Considerf adding cleaning and filtering here.
+    #             batch[it].summary = summary
 
-            # Write the summarized documents to a file
-            for document in batch:
-                f.write(json.dumps(document.serialize()))
-                f.write("\n")
+    #         # Write the summarized documents to a file
+    #         for document in batch:
+    #             f.write(json.dumps(document.serialize()))
+    #             f.write("\n")
 
-    elapsed_time = time.time() - start_time
-    LOGGER.info(f"--> Processed {num_processed_documents} documents in {elapsed_time:.2f} seconds.")
+    # elapsed_time = time.time() - start_time
+    # LOGGER.info(f"--> Processed {num_processed_documents} documents in {elapsed_time:.2f} seconds.")
 
 
 def check_if_file_exists(cfg: DictConfig) -> None:
@@ -138,13 +139,13 @@ def main(cfg: DictConfig) -> None:
     assert isinstance(writer, PanzaWriter), "Failed to instantiate PanzaWriter"
 
     # Load documents
-    documents = load_documents(cfg.cleaned_emails_path)
-    generate_synthetic_instructions(
-        documents=documents,
-        writer=writer,
-        batch_size=cfg.batch_size,
-        output_path=cfg.summarized_emails_path,
-    )
+    #documents = load_documents(cfg.cleaned_emails_path)
+    # generate_synthetic_instructions(
+    #     documents=documents,
+    #     writer=writer,
+    #     batch_size=cfg.batch_size,
+    #     output_path=cfg.summarized_emails_path,
+    # )
 
     # Write the test data to test.jsonl, with an optional train-test split
     split_and_write_data(cfg)
@@ -159,15 +160,15 @@ def main(cfg: DictConfig) -> None:
         cfg.rag_embedding_model,
     )
 
-    if cfg.number_rag_emails_to_cache_with_train_data > 0:
-        prepare_raft_emails(
-            os.path.join(cfg.user.data_dir, "train.jsonl"),
-            cfg.rag_embedding_model,
-            cfg.rag_db_dir,
-            cfg.user.username,
-            cfg.number_rag_emails_to_cache_with_train_data,
-            write_back_to_same_loc=True,
-        )
+    # if cfg.number_rag_emails_to_cache_with_train_data > 0:
+    #     prepare_raft_emails(
+    #         os.path.join(cfg.user.data_dir, "train.jsonl"),
+    #         cfg.rag_embedding_model,
+    #         cfg.rag_db_dir,
+    #         cfg.user.username,
+    #         cfg.number_rag_emails_to_cache_with_train_data,
+    #         write_back_to_same_loc=True,
+    #     )
 
 
 if __name__ == "__main__":

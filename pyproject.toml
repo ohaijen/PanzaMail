@@ -3,7 +3,7 @@ name = "panza_mail"
 version = "2024.08.14"
 description = "A personal email assistant, trained and running on-device."
 dependencies = [
-    "torch==2.2.2",
+    "torch>=2.2",
     "ollama",
     "omegaconf",
     "fastapi",
@@ -21,18 +21,33 @@ dependencies = [
     "torchmetrics",
     "nltk",
     "accelerate",
+    "langdetect"
 ]
 
 [project.optional-dependencies]
 training = [
-    "langdetect",
-    "fire",
-    "gradio",
-    "cmake",
-    "packaging",
-    "llm-foundry@git+https://github.com/IST-DASLab/llm-foundry@panza-release",
-    "peft@git+https://github.com/IST-DASLab/peft-rosa.git@grad_quant_looser_versioning",
-    "spops-sm-80",
+    "transformers",
+    "datasets",
+    "peft",
+    "accelerate",
+]
+training_lora = [
+    "transformers",
+    "datasets",
+    "peft",
+    "accelerate",
+]
+training_mps = [
+    "transformers",
+    "datasets",
+    "peft",
+    "accelerate",
+]
+training_mlx = [
+    "mlx>=0.29.0; platform_system == 'Darwin'",
+    "mlx-lm>=0.30.0; platform_system == 'Darwin'",
+    "transformers",
+    "datasets",
 ]
 contributing = [
     "pre-commit",
