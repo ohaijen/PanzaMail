@@ -70,6 +70,30 @@ from panza import PanzaWriter  # The import also loads custom Hydra resolvers
 
 log = logging.getLogger(__name__)
 
+try:
+    import spops
+except ImportError:
+    spops = None
+
+try:
+    from peft.tuners.rosa import RosaConfig, RosaModel, RosaScheduler
+except ImportError:
+    RosaConfig = None
+    RosaModel = None
+    RosaScheduler = None
+
+
+def get_adapter_type(finetuning_cfg: DictConfig) -> Optional[str]:
+    has_rosa = "rosa" in finetuning_cfg
+    has_lora = "lora" in finetuning_cfg
+    if has_rosa and has_lora:
+        raise ValueError("Only one adapter mode can be enabled at a time (choose either rosa or lora).")
+    if has_rosa:
+        return "rosa"
+    if has_lora:
+        return "lora"
+    return None
+
 
 def validate_config(cfg: DictConfig):
     """Validates compatible model and dataloader selection."""
@@ -158,6 +182,8 @@ def create_run_name(cfg: DictConfig) -> str:
         run_name += "-lora"
     else:
         run_name += "-fft"
+    else:
+        run_name += f"-{adapter_type}"
 
     run_name += f"-lr{cfg.finetuning.lr}"
     run_name += f"-{cfg.finetuning.max_duration}"
@@ -206,6 +232,8 @@ def build_composer_peft_model(
     model_config: str,
     lora_config: Optional[Dict[str, Any]],
     tokenizer: PreTrainedTokenizerBase,
+    rosa_config: Optional[Dict[str, Any]] = None,
+    lora_config: Optional[Dict[str, Any]] = None,
     is_fsdp: bool = False,
 ) -> ComposerHFCausalLM:
 
@@ -380,6 +408,11 @@ def main(cfg: DictConfig) -> Trainer:
     lora_config: Optional[Dict[str, Any]] = pop_config(
         cfg, "lora", must_exist=False, default_value=None, convert=True
     )
+    lora_config: Optional[Dict[str, Any]] = pop_config(
+        cfg, "lora", must_exist=False, default_value=None, convert=True
+    )
+    if rosa_config is not None and lora_config is not None:
+        raise ValueError("Both rosa and lora configs were provided. Select only one adapter mode.")
 
     hf_save_path: Union[int, str] = pop_config(cfg, "hf_save_path", must_exist=True)
 
@@ -748,6 +781,11 @@ def main(cfg: DictConfig) -> Trainer:
         assert optimizer_name == "decoupled_adamw"
         lora_params = []
         other_params = []
+        adapter_param_keys = (
+            ["rosa_A", "rosa_B", "rosa_embedding_A", "rosa_embedding_B"]
+            if rosa_config is not None
+            else ["lora_A", "lora_B", "lora_embedding_A", "lora_embedding_B"]
+        )
         for name, param in model.named_parameters():
             if "lora_" in name:
                 lora_params.append(param)

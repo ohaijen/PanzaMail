@@ -66,8 +66,8 @@ def generate_synthetic_instructions(
                 SummarizationInstruction(instruction=document.snippet_text, context=document.source_path) for document in batch
             ]
 
-            summaries = writer.run_batch(instructions)
-            num_processed_documents += len(summaries)
+    #         summaries = writer.run_batch(instructions)
+    #         num_processed_documents += len(summaries)
 
             for it, summary in enumerate(summaries):
                 # Considerf adding cleaning and filtering here.

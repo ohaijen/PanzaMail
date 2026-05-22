@@ -4,7 +4,9 @@ defaults:
 _target_: panza.llm.PeftLLM
 name: ${checkpoint}
 checkpoint: ${checkpoint}
-device: "cuda"  # Alternatively, "cuda"
+# Does MLX work in bf16?
 dtype: "bf16"
+#dtype: "fp32"
+device: ${oc.env:PANZA_DEVICE,cuda}  # supports: cuda, cpu, mps, mlx
 load_in_4bit: false
 remove_prompt_from_stream: false

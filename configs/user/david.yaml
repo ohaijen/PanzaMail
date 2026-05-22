@@ -1,7 +1,7 @@
 email_address: "david_anonymous@xyz.com"  # Change this to your email address!
 username: "david_anonymous"  # This identifies the user in the users directory and the names of the emails files.
 
-data_dir: ${panza_workspace}/data/david_anonymous
+data_dir: ${panza_workspace}/data/david_demo
 
 system_preamble_path: ${panza_workspace}/prompt_preambles/system_preamble.txt
 pre_personalization_system_preamble_path: ${panza_workspace}/prompt_preambles/system_preamble.txt

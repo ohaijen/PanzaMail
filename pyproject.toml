@@ -1,9 +1,9 @@
 [project]
 name = "panza_mail"
-version = "2024.08.14"
+version = "2026.05.22"
 description = "A personal email assistant, trained and running on-device."
 dependencies = [
-    "torch",
+    "torch>=2.2",
     "ollama",
     "omegaconf",
     "fastapi",
@@ -22,6 +22,7 @@ dependencies = [
     "nltk",
     "accelerate",
     "nicegui",
+    "langdetect"
 ]
 
 [project.optional-dependencies]
@@ -31,6 +32,27 @@ training = [
     "gradio",
     "cmake",
     "packaging",
+    "transformers",
+    "datasets",
+    "peft",
+    "accelerate",
+]
+training_lora = [
+    "transformers",
+    "datasets",
+    "peft",
+    "accelerate",
+]
+training_mps = [
+    "transformers",
+    "datasets",
+    "accelerate",
+]
+training_mlx = [
+    "mlx>=0.29.0; platform_system == 'Darwin'",
+    "mlx-lm>=0.30.0; platform_system == 'Darwin'",
+    "transformers",
+    "datasets",
 ]
 contributing = [
     "pre-commit",

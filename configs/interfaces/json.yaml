@@ -1,10 +1,9 @@
 input_file: ${panza_workspace}/data/${user.username}/test.jsonl
 output_path: ""
 batch_size: 4
-use_thread: false
 responses_per_prompt: 1
 checkpoint: ${checkpoint}
 panza_workspace: ${panza_workspace}
-compute_metrics: true
+compute_metrics: true  # Metrics (especially MAUVE) are expensive; keep off for fast generation.
 username: ${user.username}
 _target_: panza.interface.PanzaJSON
