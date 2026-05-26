@@ -76,7 +76,7 @@ class PanzaNiceGUI:
         self.review_counts_label = None
         self.review_source_label = None
 
-        self.file_selector_root = Path("/nfs/scistore19/alistgrp/eiofinov/PanzaMail-snippets")
+        self.file_selector_root = Path("/Users/jen/Projects/")
         if not self.file_selector_root.exists():
             self.file_selector_root = self._repo_root()
         self.file_tree_container = None
@@ -468,26 +468,40 @@ class PanzaNiceGUI:
             self.selected_file_viewer.value = content
             self.selected_file_viewer.update()
 
-    def _render_file_tree(self, path: Path, container: Any, depth: int = 0) -> None:
+    def _build_txt_file_tree(self, path: Path) -> Optional[Dict[str, Any]]:
         try:
             entries = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
         except Exception:
-            ui.label(f"Unable to read directory: {path}").classes("text-sm text-red-600")
-            return
+            return None
 
+        children: List[Dict[str, Any]] = []
         for entry in entries:
             if entry.is_dir():
+                subtree = self._build_txt_file_tree(entry)
+                if subtree is not None:
+                    children.append(subtree)
+            elif entry.is_file() and entry.suffix.lower() == ".txt":
+                children.append({"path": entry, "type": "file"})
+
+        if not children:
+            return None
+        return {"path": path, "type": "directory", "children": children}
+
+    def _render_file_tree_node(self, node: Dict[str, Any], container: Any, depth: int = 0) -> None:
+        path = node["path"]
+        if node["type"] == "directory":
+            if depth > 0:
                 with container:
-                    ui.label(entry.name).classes("font-semibold").style(
-                        f"margin-left: {depth * 16}px;"
-                    )
-                self._render_file_tree(entry, container, depth + 1)
-            elif entry.suffix.lower() in {".txt", ".rtf"}:
+                    ui.label(path.name).classes("font-semibold").style(f"margin-left: {depth * 16}px;")
+            for child in node["children"]:
+                self._render_file_tree_node(child, container, depth + 1)
+        else:
+            with container:
                 ui.button(
-                    entry.name,
-                    on_click=lambda selected_path=entry: self._select_file(selected_path),
+                    path.name,
+                    on_click=lambda selected_path=path: self._select_file(selected_path),
                 ).props("flat").classes("w-full text-left").style(
-                    f"margin-left: {(depth + 1) * 16}px;"
+                    f"margin-left: {depth * 16}px;"
                 )
 
     def _load_file_tree(self) -> None:
@@ -497,7 +511,11 @@ class PanzaNiceGUI:
         if not self.file_selector_root.exists():
             ui.label(f"Directory not found: {self.file_selector_root}").classes("text-sm text-red-600")
             return
-        self._render_file_tree(self.file_selector_root, self.file_tree_container)
+        file_tree = self._build_txt_file_tree(self.file_selector_root)
+        if file_tree is None:
+            ui.label("No .txt files found.").classes("text-sm text-gray-600")
+            return
+        self._render_file_tree_node(file_tree, self.file_tree_container)
 
     def _persist_review_state(self) -> None:
         self.review_state_path.parent.mkdir(parents=True, exist_ok=True)
