@@ -13,6 +13,7 @@ from typing import Any, Dict, Generator, List, Optional, Tuple
 from nicegui import ui
 
 from panza.entities.instruction import Instruction, SnippetInstruction
+from panza.interface.snippet_utils import dedupe_snippets, process_file
 from panza.writer import PanzaWriter
 
 
@@ -76,12 +77,14 @@ class PanzaNiceGUI:
         self.review_counts_label = None
         self.review_source_label = None
 
-        self.file_selector_root = Path("/Users/jen/Projects/")
+        self.file_selector_root = Path("/Users/jen/Downloads/")
         if not self.file_selector_root.exists():
             self.file_selector_root = self._repo_root()
         self.file_tree_container = None
         self.selected_file_path_label = None
         self.selected_file_viewer = None
+        self.selected_file_split_button = None
+        self.selected_file_split_status_label = None
         self.selected_file_path: Optional[Path] = None
 
         self.prompt_input = None
@@ -467,6 +470,80 @@ class PanzaNiceGUI:
         if self.selected_file_viewer is not None:
             self.selected_file_viewer.value = content
             self.selected_file_viewer.update()
+        if self.selected_file_split_button is not None:
+            self.selected_file_split_button.visible = True
+            self.selected_file_split_button.update()
+        if self.selected_file_split_status_label is not None:
+            self.selected_file_split_status_label.text = ""
+            self.selected_file_split_status_label.update()
+
+    def _set_selected_file_split_status(self, status: str) -> None:
+        if self.selected_file_split_status_label is not None:
+            self.selected_file_split_status_label.text = status
+            self.selected_file_split_status_label.update()
+
+    def _next_snippet_id_number(self, snippets: List[Dict[str, Any]]) -> int:
+        max_id = 0
+        for snippet in snippets:
+            snippet_id = str(snippet.get("id", ""))
+            match = re.fullmatch(r"s(\d+)", snippet_id)
+            if match:
+                max_id = max(max_id, int(match.group(1)))
+        return max_id + 1
+
+    def _assign_missing_snippet_ids(self, snippets: List[Dict[str, Any]]) -> None:
+        next_id = self._next_snippet_id_number(snippets)
+        for snippet in snippets:
+            if snippet.get("id"):
+                continue
+            snippet["id"] = f"s{next_id:06d}"
+            next_id += 1
+
+    async def _split_selected_file_into_snippets(self) -> None:
+        if self.selected_file_path is None:
+            self._set_selected_file_split_status("Select a .txt file first.")
+            return
+
+        split_button = self.selected_file_split_button
+        if split_button is not None:
+            split_button.enabled = False
+            split_button.update()
+
+        await asyncio.sleep(0)
+        try:
+            new_snippets, stats = process_file(self.selected_file_path, snippets_per_file=200)
+            if not new_snippets:
+                reason = ", ".join(f"{key}: {value}" for key, value in sorted(stats.items()))
+                self._set_selected_file_split_status(
+                    f"No snippets were created from this file. {reason or 'No reason reported.'}"
+                )
+                return
+
+            before_count = len(self.review_snippets)
+            combined = dedupe_snippets([*self.review_snippets, *new_snippets])
+            self._assign_missing_snippet_ids(combined)
+
+            self.snippets_path.parent.mkdir(parents=True, exist_ok=True)
+            self.snippets_path.write_text(
+                json.dumps(combined, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            self.review_state["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            self.review_state["dataset_sha256"] = self._compute_dataset_hash(self.snippets_path)
+            self._persist_review_state()
+
+            self._load_snippet_tool_state()
+            self._load_review_snippet()
+            added_count = len(self.review_snippets) - before_count
+            self._set_selected_file_split_status(
+                f"Created {len(new_snippets)} snippet(s); added {added_count} new snippet(s) to review."
+            )
+        except Exception as exc:
+            self._set_selected_file_split_status(f"Could not split file into snippets: {exc}")
+        finally:
+            if split_button is not None:
+                split_button.enabled = True
+                split_button.update()
 
     def _build_txt_file_tree(self, path: Path) -> Optional[Dict[str, Any]]:
         try:
@@ -703,6 +780,12 @@ class PanzaNiceGUI:
                 self.selected_file_viewer = ui.textarea(
                     value="",
                 ).props("readonly").style("width: 100%; min-height: 360px;")
+                self.selected_file_split_button = ui.button(
+                    "Split into snippets",
+                    on_click=self._split_selected_file_into_snippets,
+                ).props("color=primary")
+                self.selected_file_split_button.visible = False
+                self.selected_file_split_status_label = ui.label("").classes("text-sm text-gray-600")
 
         ui.label("Review candidate snippets and keep the ones you want to add to training data. All candidates are shown below grouped by document path.").classes(
             "text-sm text-gray-600"
