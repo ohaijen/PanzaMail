@@ -97,13 +97,18 @@ class PanzaJSON:
         for entry in golden_lines:
             # 'summary' is the name of the 'prompt' field, i.e., the one to group on.
             if entry["summary"] in grouped_golden:
-                #if "email" in entry:
+                if "email" in entry:
+                    has_goldens = True
+                    #grouped_golden[entry["summary"]]["goldens"].append(entry["email"])
                 if "snippet_text" in entry:
                     has_goldens = True
                     #grouped_golden[entry["summary"]]["goldens"].append(entry["email"])
                     grouped_golden[entry["summary"]]["goldens"].append(entry["snippet_text"])
             else:
                 grouped_golden[entry["summary"]] = {}
+                if "email" in entry:
+                    has_goldens = True
+                    grouped_golden[entry["summary"]]["goldens"] = [(entry["email"])]
                 #if "email" in entry:
                 if "snippet_text" in entry:
                     has_goldens = True
@@ -137,9 +142,9 @@ class PanzaJSON:
                 else:
                     instructions = list(zip(prompts, [[]] * len(prompts)))
 
+                #EmailInstruction(user_input[0], thread=user_input[1])
                 outputs, full_prompts = self.writer.run_batch(
                     [
-                        #EmailInstruction(user_input[0], thread=user_input[1])
                         SnippetInstruction(user_input[0], context=user_input[1])
                         for user_input in instructions
                     ],
@@ -190,12 +195,13 @@ class PanzaJSON:
     def __init__(
         self,
         writer: PanzaWriter,
+        pre_personalization_writer: PanzaWriter,
         checkpoint: str,
         panza_workspace: str,
         input_file: str,
         output_path: str,
         batch_size: int,
-        use_thread: bool,
+        #use_thread: bool,
         responses_per_prompt: int,
         compute_metrics: bool,
         username: str,
@@ -203,7 +209,7 @@ class PanzaJSON:
         self.writer = writer
         infer_start = time.perf_counter()
         responses, has_goldens = self.assemble_responses(
-            input_file, batch_size, use_thread, responses_per_prompt
+            input_file, batch_size, False, responses_per_prompt
         )
         infer_elapsed = time.perf_counter() - infer_start
         print(f"Inference completed in {infer_elapsed:.2f}s")
