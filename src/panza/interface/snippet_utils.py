@@ -8,7 +8,7 @@ import subprocess
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 ALLOWED_EXTS = {".txt", ".doc", ".docx"}
@@ -88,6 +88,7 @@ SENSITIVE_TEXT_KEYWORDS = [
 
 
 def _keyword_regex(keyword: str) -> re.Pattern[str]:
+    """Build a whole-term, case-insensitive regex for a sensitive keyword phrase."""
     tokens = [re.escape(tok) for tok in keyword.split()]
     return re.compile(r"\b" + r"\s+".join(tokens) + r"\b", re.IGNORECASE)
 
@@ -106,6 +107,7 @@ WORD_RE = re.compile(r"[A-Za-z][A-Za-z'\-]*")
 
 
 def iter_candidate_files(root: Path) -> List[Path]:
+    """Return text and Word files under root while pruning ignored folders."""
     files: List[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
         dpath = dirpath.lower()
@@ -127,6 +129,7 @@ def iter_candidate_files(root: Path) -> List[Path]:
 
 
 def should_skip_by_name_or_path(path: Path) -> Optional[str]:
+    """Return a skip reason when a path looks sensitive or unsuitable."""
     lower_path = str(path).lower()
     for key in SENSITIVE_PATH_KEYWORDS:
         if key in lower_path:
@@ -140,6 +143,7 @@ def should_skip_by_name_or_path(path: Path) -> Optional[str]:
 
 
 def read_text_file(path: Path) -> str:
+    """Read a plain text file with a small set of common fallback encodings."""
     encodings = ["utf-8", "utf-16", "latin-1", "cp1252"]
     for enc in encodings:
         try:
@@ -152,6 +156,7 @@ def read_text_file(path: Path) -> str:
 
 
 def read_word_file(path: Path) -> str:
+    """Convert a Word document to text using macOS textutil."""
     try:
         proc = subprocess.run(
             ["/usr/bin/textutil", "-convert", "txt", "-stdout", str(path)],
@@ -169,6 +174,7 @@ def read_word_file(path: Path) -> str:
 
 
 def normalize_text(raw: str) -> str:
+    """Normalize line endings, tabs, nulls, and repeated spaces in raw text."""
     text = raw.replace("\r\n", "\n").replace("\r", "\n")
     text = text.replace("\u0000", "")
     text = re.sub(r"\t+", " ", text)
@@ -177,6 +183,7 @@ def normalize_text(raw: str) -> str:
 
 
 def split_into_paragraphs(text: str) -> List[str]:
+    """Split normalized text into quality-filtered prose paragraphs."""
     lines = text.split("\n")
     paragraphs: List[str] = []
     current: List[str] = []
@@ -206,10 +213,12 @@ def split_into_paragraphs(text: str) -> List[str]:
 
 
 def word_count(text: str) -> int:
+    """Count word-like alphabetic tokens in text."""
     return len(WORD_RE.findall(text))
 
 
 def looks_like_prose(text: str) -> bool:
+    """Return whether text is long and text-dense enough to be prose."""
     text = text.strip()
     if len(text) < 800:
         return False
@@ -238,6 +247,7 @@ def looks_like_prose(text: str) -> bool:
 
 
 def paragraph_quality_ok(paragraph: str) -> bool:
+    """Return whether a paragraph has enough letters and few odd symbols."""
     if not paragraph:
         return False
 
@@ -258,6 +268,7 @@ def paragraph_quality_ok(paragraph: str) -> bool:
 
 
 def snippet_quality_issue(snippet: str) -> Optional[str]:
+    """Return a quality failure reason for a snippet, or None when it passes."""
     controls = sum(1 for c in snippet if ord(c) < 32 and c not in "\n\t")
     if controls > 0:
         return "control_chars"
@@ -283,6 +294,7 @@ def snippet_quality_issue(snippet: str) -> Optional[str]:
 
 
 def snippet_sensitive(snippet: str) -> Optional[str]:
+    """Return a sensitivity failure reason for a snippet, or None when it passes."""
     low = snippet.lower()
     for kw, pattern in SENSITIVE_TEXT_PATTERNS:
         if pattern.search(snippet):
@@ -304,6 +316,7 @@ def snippet_sensitive(snippet: str) -> Optional[str]:
 
 
 def candidate_snippets(paragraphs: List[str], limit: int) -> List[str]:
+    """Choose high-scoring, non-overlapping snippet windows from paragraphs."""
     candidates: List[Tuple[float, str, Tuple[int, int]]] = []
     n = len(paragraphs)
 
@@ -347,6 +360,7 @@ def candidate_snippets(paragraphs: List[str], limit: int) -> List[str]:
 
 
 def process_file(path: Path, snippets_per_file: int) -> Tuple[List[Dict[str, object]], Counter]:
+    """Extract reviewable snippets from one file and return filter statistics."""
     stats = Counter()
     skip_reason = should_skip_by_name_or_path(path)
     if skip_reason:
@@ -422,6 +436,7 @@ def process_file(path: Path, snippets_per_file: int) -> Tuple[List[Dict[str, obj
 
 
 def dedupe_snippets(snippets: Iterable[Dict[str, object]]) -> List[Dict[str, object]]:
+    """Remove duplicate snippets by normalized snippet text hash."""
     seen: set[str] = set()
     unique: List[Dict[str, object]] = []
 
@@ -438,6 +453,7 @@ def dedupe_snippets(snippets: Iterable[Dict[str, object]]) -> List[Dict[str, obj
 
 
 def write_outputs(output_dir: Path, snippets: List[Dict[str, object]], report: Dict[str, object]) -> None:
+    """Write snippets, scan report, empty kept files, and initial review state."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     snippets_path = output_dir / "snippets.json"
@@ -458,3 +474,218 @@ def write_outputs(output_dir: Path, snippets: List[Dict[str, object]], report: D
 
     kept_jsonl_path.write_text("", encoding="utf-8")
     kept_json_path.write_text("[]\n", encoding="utf-8")
+
+
+def compute_dataset_hash(path: Path) -> str:
+    """Return the SHA-256 hash for a dataset file, or an empty string on failure."""
+    if not path.exists():
+        return ""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except Exception:
+        return ""
+
+
+def read_preview_file(path: Path) -> str:
+    """Read a selected file for UI preview using forgiving text encodings."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception:
+        try:
+            return path.read_text(encoding="latin-1")
+        except Exception as exc:
+            return f"Could not read file: {exc}"
+
+
+def persist_review_state(review_state_path: Path, review_state: Dict[str, Any]) -> None:
+    """Write review state JSON, creating its parent directory if needed."""
+    review_state_path.parent.mkdir(parents=True, exist_ok=True)
+    review_state_path.write_text(
+        json.dumps(review_state, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def group_snippets_by_source(
+    snippets: List[Dict[str, Any]],
+) -> Tuple[Dict[str, List[Dict[str, Any]]], List[str]]:
+    """Group snippets by source path while preserving first-seen source order."""
+    docs_by_source: Dict[str, List[Dict[str, Any]]] = {}
+    document_paths: List[str] = []
+    for snippet in snippets:
+        source_path = str(snippet.get("source_path", "Unknown"))
+        if source_path not in docs_by_source:
+            docs_by_source[source_path] = []
+            document_paths.append(source_path)
+        docs_by_source[source_path].append(snippet)
+    return docs_by_source, document_paths
+
+
+def load_snippet_tool_state(
+    snippets_path: Path,
+    review_state_path: Path,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any], Dict[str, List[Dict[str, Any]]], List[str]]:
+    """Load snippets and review state, repairing missing defaults as needed."""
+    snippets: List[Dict[str, Any]] = []
+    review_state: Dict[str, Any] = {}
+
+    if snippets_path.exists():
+        try:
+            loaded_snippets = json.loads(snippets_path.read_text(encoding="utf-8"))
+            if isinstance(loaded_snippets, list):
+                snippets = loaded_snippets
+        except Exception:
+            snippets = []
+
+    if review_state_path.exists():
+        try:
+            loaded_state = json.loads(review_state_path.read_text(encoding="utf-8"))
+            if isinstance(loaded_state, dict):
+                review_state = loaded_state
+        except Exception:
+            review_state = {}
+
+    if not isinstance(review_state.get("decisions"), dict):
+        review_state["decisions"] = {}
+
+    review_state.setdefault("updated_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    review_state.setdefault("dataset_sha256", compute_dataset_hash(snippets_path))
+    persist_review_state(review_state_path, review_state)
+
+    docs_by_source, document_paths = group_snippets_by_source(snippets)
+    return snippets, review_state, docs_by_source, document_paths
+
+
+def build_txt_file_tree(path: Path) -> Optional[Dict[str, Any]]:
+    """Build a pruned tree containing only directories with .txt descendants."""
+    try:
+        entries = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+    except Exception:
+        return None
+
+    children: List[Dict[str, Any]] = []
+    for entry in entries:
+        if entry.is_dir():
+            subtree = build_txt_file_tree(entry)
+            if subtree is not None:
+                children.append(subtree)
+        elif entry.is_file() and entry.suffix.lower() == ".txt":
+            children.append({"path": entry, "type": "file"})
+
+    if not children:
+        return None
+    return {"path": path, "type": "directory", "children": children}
+
+
+def next_snippet_id_number(snippets: List[Dict[str, Any]]) -> int:
+    """Return the next numeric suffix for snippet IDs of the form s000001."""
+    max_id = 0
+    for snippet in snippets:
+        snippet_id = str(snippet.get("id", ""))
+        match = re.fullmatch(r"s(\d+)", snippet_id)
+        if match:
+            max_id = max(max_id, int(match.group(1)))
+    return max_id + 1
+
+
+def assign_missing_snippet_ids(snippets: List[Dict[str, Any]]) -> None:
+    """Assign stable sequential IDs to snippets that do not already have one."""
+    next_id = next_snippet_id_number(snippets)
+    for snippet in snippets:
+        if snippet.get("id"):
+            continue
+        snippet["id"] = f"s{next_id:06d}"
+        next_id += 1
+
+
+def split_file_into_review_dataset(
+    selected_file_path: Path,
+    existing_snippets: List[Dict[str, Any]],
+    review_state: Dict[str, Any],
+    snippets_path: Path,
+    review_state_path: Path,
+    snippets_per_file: int = 200,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any], int, int, Counter]:
+    """Split one selected file and merge new snippets into the review dataset."""
+    new_snippets, stats = process_file(selected_file_path, snippets_per_file=snippets_per_file)
+    if not new_snippets:
+        return existing_snippets, review_state, 0, 0, stats
+
+    before_count = len(existing_snippets)
+    combined = dedupe_snippets([*existing_snippets, *new_snippets])
+    assign_missing_snippet_ids(combined)
+
+    snippets_path.parent.mkdir(parents=True, exist_ok=True)
+    snippets_path.write_text(
+        json.dumps(combined, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    review_state["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    review_state["dataset_sha256"] = compute_dataset_hash(snippets_path)
+    persist_review_state(review_state_path, review_state)
+
+    return combined, review_state, len(new_snippets), len(combined) - before_count, stats
+
+
+def export_kept_snippets(
+    review_snippets: List[Dict[str, Any]],
+    review_state: Dict[str, Any],
+    kept_jsonl_path: Path,
+    kept_json_path: Path,
+) -> None:
+    """Write kept review snippets to JSONL and JSON export files."""
+    decisions = review_state.get("decisions", {})
+    kept = [
+        snippet
+        for snippet in review_snippets
+        if decisions.get(str(snippet.get("id", ""))) == "keep"
+    ]
+    kept_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+    with kept_jsonl_path.open("w", encoding="utf-8") as fh:
+        for row in kept:
+            item = {
+                "id": row.get("id"),
+                "source_path": row.get("source_path"),
+                "snippet_text": row.get("snippet_text"),
+                "snippet_word_count": row.get("snippet_word_count"),
+                "paragraph_count": row.get("paragraph_count"),
+            }
+            fh.write(json.dumps(item, ensure_ascii=False) + "\n")
+    kept_json_path.write_text(
+        json.dumps(kept, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def apply_review_decision(
+    review_state: Dict[str, Any],
+    snippet_id: str,
+    decision: str,
+) -> None:
+    """Apply one keep/delete decision to review state and update its timestamp."""
+    review_state.setdefault("decisions", {})[snippet_id] = decision
+    review_state["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def apply_review_decision_bulk(
+    review_state: Dict[str, Any],
+    snippets: List[Dict[str, Any]],
+    decision: str,
+) -> None:
+    """Apply one keep/delete decision to all snippets in a document group."""
+    decisions = review_state.setdefault("decisions", {})
+    for snippet in snippets:
+        snippet_id = str(snippet.get("id", ""))
+        if snippet_id:
+            decisions[snippet_id] = decision
+    review_state["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def review_counts_text(review_snippets: List[Dict[str, Any]], review_state: Dict[str, Any]) -> str:
+    """Return a compact review progress summary for the UI."""
+    decisions = review_state.get("decisions", {})
+    kept = sum(1 for value in decisions.values() if value == "keep")
+    deleted = sum(1 for value in decisions.values() if value == "delete")
+    total = len(review_snippets)
+    pending = max(total - kept - deleted, 0)
+    return f"Total: {total} | Kept: {kept} | Deleted: {deleted} | Pending: {pending}"

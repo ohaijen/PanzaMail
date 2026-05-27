@@ -2,18 +2,26 @@ from __future__ import annotations
 
 import asyncio
 import difflib
-import hashlib
 import html
 import json
 import re
-import time
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from nicegui import ui
 
 from panza.entities.instruction import Instruction, SnippetInstruction
-from panza.interface.snippet_utils import dedupe_snippets, process_file
+from panza.interface.snippet_utils import (
+    apply_review_decision,
+    apply_review_decision_bulk,
+    build_txt_file_tree,
+    export_kept_snippets,
+    load_snippet_tool_state,
+    persist_review_state,
+    read_preview_file,
+    review_counts_text,
+    split_file_into_review_dataset,
+)
 from panza.writer import PanzaWriter
 
 
@@ -407,63 +415,18 @@ class PanzaNiceGUI:
             pass
 
     def _load_snippet_tool_state(self) -> None:
-        self.review_snippets = []
-        self.review_state = {}
-        self.review_docs_by_source = {}
-        self.review_document_paths = []
+        (
+            self.review_snippets,
+            self.review_state,
+            self.review_docs_by_source,
+            self.review_document_paths,
+        ) = load_snippet_tool_state(self.snippets_path, self.review_state_path)
         self.review_doc_index = 0
         self.review_current_source = None
 
-        if self.snippets_path.exists():
-            try:
-                snippets = json.loads(self.snippets_path.read_text(encoding="utf-8"))
-                if isinstance(snippets, list):
-                    self.review_snippets = snippets
-            except Exception:
-                self.review_snippets = []
-
-        if self.review_state_path.exists():
-            try:
-                state = json.loads(self.review_state_path.read_text(encoding="utf-8"))
-                if isinstance(state, dict):
-                    self.review_state = state
-            except Exception:
-                self.review_state = {}
-
-        if not isinstance(self.review_state.get("decisions"), dict):
-            self.review_state["decisions"] = {}
-
-        self.review_state.setdefault("updated_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
-        self.review_state.setdefault("dataset_sha256", self._compute_dataset_hash(self.snippets_path))
-        self._persist_review_state()
-
-        self.review_docs_by_source = {}
-        self.review_document_paths = []
-        for snippet in self.review_snippets:
-            source_path = str(snippet.get("source_path", "Unknown"))
-            if source_path not in self.review_docs_by_source:
-                self.review_docs_by_source[source_path] = []
-                self.review_document_paths.append(source_path)
-            self.review_docs_by_source[source_path].append(snippet)
-
-    def _compute_dataset_hash(self, path: Path) -> str:
-        if not path.exists():
-            return ""
-        try:
-            return hashlib.sha256(path.read_bytes()).hexdigest()
-        except Exception:
-            return ""
-
     def _select_file(self, path: Path) -> None:
         self.selected_file_path = path
-        content = ""
-        try:
-            content = path.read_text(encoding="utf-8")
-        except Exception:
-            try:
-                content = path.read_text(encoding="latin-1")
-            except Exception as exc:
-                content = f"Could not read file: {exc}"
+        content = read_preview_file(path)
         if self.selected_file_path_label is not None:
             self.selected_file_path_label.text = str(path)
             self.selected_file_path_label.update()
@@ -482,23 +445,6 @@ class PanzaNiceGUI:
             self.selected_file_split_status_label.text = status
             self.selected_file_split_status_label.update()
 
-    def _next_snippet_id_number(self, snippets: List[Dict[str, Any]]) -> int:
-        max_id = 0
-        for snippet in snippets:
-            snippet_id = str(snippet.get("id", ""))
-            match = re.fullmatch(r"s(\d+)", snippet_id)
-            if match:
-                max_id = max(max_id, int(match.group(1)))
-        return max_id + 1
-
-    def _assign_missing_snippet_ids(self, snippets: List[Dict[str, Any]]) -> None:
-        next_id = self._next_snippet_id_number(snippets)
-        for snippet in snippets:
-            if snippet.get("id"):
-                continue
-            snippet["id"] = f"s{next_id:06d}"
-            next_id += 1
-
     async def _split_selected_file_into_snippets(self) -> None:
         if self.selected_file_path is None:
             self._set_selected_file_split_status("Select a .txt file first.")
@@ -511,32 +457,25 @@ class PanzaNiceGUI:
 
         await asyncio.sleep(0)
         try:
-            new_snippets, stats = process_file(self.selected_file_path, snippets_per_file=200)
-            if not new_snippets:
+            _, _, created_count, added_count, stats = split_file_into_review_dataset(
+                self.selected_file_path,
+                self.review_snippets,
+                self.review_state,
+                self.snippets_path,
+                self.review_state_path,
+                snippets_per_file=200,
+            )
+            if created_count == 0:
                 reason = ", ".join(f"{key}: {value}" for key, value in sorted(stats.items()))
                 self._set_selected_file_split_status(
                     f"No snippets were created from this file. {reason or 'No reason reported.'}"
                 )
                 return
 
-            before_count = len(self.review_snippets)
-            combined = dedupe_snippets([*self.review_snippets, *new_snippets])
-            self._assign_missing_snippet_ids(combined)
-
-            self.snippets_path.parent.mkdir(parents=True, exist_ok=True)
-            self.snippets_path.write_text(
-                json.dumps(combined, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            self.review_state["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            self.review_state["dataset_sha256"] = self._compute_dataset_hash(self.snippets_path)
-            self._persist_review_state()
-
             self._load_snippet_tool_state()
             self._load_review_snippet()
-            added_count = len(self.review_snippets) - before_count
             self._set_selected_file_split_status(
-                f"Created {len(new_snippets)} snippet(s); added {added_count} new snippet(s) to review."
+                f"Created {created_count} snippet(s); added {added_count} new snippet(s) to review."
             )
         except Exception as exc:
             self._set_selected_file_split_status(f"Could not split file into snippets: {exc}")
@@ -544,25 +483,6 @@ class PanzaNiceGUI:
             if split_button is not None:
                 split_button.enabled = True
                 split_button.update()
-
-    def _build_txt_file_tree(self, path: Path) -> Optional[Dict[str, Any]]:
-        try:
-            entries = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
-        except Exception:
-            return None
-
-        children: List[Dict[str, Any]] = []
-        for entry in entries:
-            if entry.is_dir():
-                subtree = self._build_txt_file_tree(entry)
-                if subtree is not None:
-                    children.append(subtree)
-            elif entry.is_file() and entry.suffix.lower() == ".txt":
-                children.append({"path": entry, "type": "file"})
-
-        if not children:
-            return None
-        return {"path": path, "type": "directory", "children": children}
 
     def _render_file_tree_node(self, node: Dict[str, Any], container: Any, depth: int = 0) -> None:
         path = node["path"]
@@ -588,48 +508,18 @@ class PanzaNiceGUI:
         if not self.file_selector_root.exists():
             ui.label(f"Directory not found: {self.file_selector_root}").classes("text-sm text-red-600")
             return
-        file_tree = self._build_txt_file_tree(self.file_selector_root)
+        file_tree = build_txt_file_tree(self.file_selector_root)
         if file_tree is None:
             ui.label("No .txt files found.").classes("text-sm text-gray-600")
             return
         self._render_file_tree_node(file_tree, self.file_tree_container)
 
-    def _persist_review_state(self) -> None:
-        self.review_state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.review_state_path.write_text(
-            json.dumps(self.review_state, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-    def _next_document_index(self) -> Optional[int]:
-        decisions = self.review_state.get("decisions", {})
-        for index, source_path in enumerate(self.review_document_paths):
-            snippets = self.review_docs_by_source.get(source_path, [])
-            if any(str(snippet.get("id", "")) not in decisions for snippet in snippets):
-                return index
-        return None
-
     def _export_kept_snippets(self) -> None:
-        decisions = self.review_state.get("decisions", {})
-        kept = [
-            s
-            for s in self.review_snippets
-            if decisions.get(str(s.get("id", ""))) == "keep"
-        ]
-        self.kept_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.kept_jsonl_path.open("w", encoding="utf-8") as fh:
-            for row in kept:
-                item = {
-                    "id": row.get("id"),
-                    "source_path": row.get("source_path"),
-                    "snippet_text": row.get("snippet_text"),
-                    "snippet_word_count": row.get("snippet_word_count"),
-                    "paragraph_count": row.get("paragraph_count"),
-                }
-                fh.write(json.dumps(item, ensure_ascii=False) + "\n")
-        self.kept_json_path.write_text(
-            json.dumps(kept, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        export_kept_snippets(
+            self.review_snippets,
+            self.review_state,
+            self.kept_jsonl_path,
+            self.kept_json_path,
         )
 
     def _load_review_snippet(self) -> None:
@@ -647,7 +537,7 @@ class PanzaNiceGUI:
                 self.review_status_label.text = "No snippets available."
                 self.review_status_label.update()
             if self.review_counts_label is not None:
-                self.review_counts_label.text = self._review_counts_text()
+                self.review_counts_label.text = review_counts_text(self.review_snippets, self.review_state)
                 self.review_counts_label.update()
             if self.review_source_label is not None:
                 self.review_source_label.text = "0"
@@ -661,7 +551,7 @@ class PanzaNiceGUI:
             self.review_status_label.text = f"Total snippets: {total_snippets}"
             self.review_status_label.update()
         if self.review_counts_label is not None:
-            self.review_counts_label.text = self._review_counts_text()
+            self.review_counts_label.text = review_counts_text(self.review_snippets, self.review_state)
             self.review_counts_label.update()
 
         with self.review_cards_container:
@@ -738,9 +628,8 @@ class PanzaNiceGUI:
     async def _review_action(self, decision: str, snippet_id: str) -> None:
         if not snippet_id:
             return
-        self.review_state.setdefault("decisions", {})[snippet_id] = decision
-        self.review_state["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        self._persist_review_state()
+        apply_review_decision(self.review_state, snippet_id, decision)
+        persist_review_state(self.review_state_path, self.review_state)
         self._export_kept_snippets()
         self._load_review_snippet()
 
@@ -748,23 +637,10 @@ class PanzaNiceGUI:
         if not source_path:
             return
         snippets = self.review_docs_by_source.get(source_path, [])
-        decisions = self.review_state.setdefault("decisions", {})
-        for snippet in snippets:
-            snippet_id = str(snippet.get("id", ""))
-            if snippet_id:
-                decisions[snippet_id] = decision
-        self.review_state["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        self._persist_review_state()
+        apply_review_decision_bulk(self.review_state, snippets, decision)
+        persist_review_state(self.review_state_path, self.review_state)
         self._export_kept_snippets()
         self._load_review_snippet()
-
-    def _review_counts_text(self) -> str:
-        decisions = self.review_state.get("decisions", {})
-        kept = sum(1 for v in decisions.values() if v == "keep")
-        deleted = sum(1 for v in decisions.values() if v == "delete")
-        total = len(self.review_snippets)
-        pending = max(total - kept - deleted, 0)
-        return f"Total: {total} | Kept: {kept} | Deleted: {deleted} | Pending: {pending}"
 
     def _build_review_tab(self) -> None:
         self._load_snippet_tool_state()
