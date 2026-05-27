@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 ALLOWED_EXTS = {".txt", ".doc", ".docx"}
+FILE_SELECTOR_EXTS = {".txt"}
 
 SKIP_PATH_KEYWORDS = {
     "/.git/",
@@ -126,6 +127,57 @@ def iter_candidate_files(root: Path) -> List[Path]:
                 continue
             files.append(path)
     return files
+
+
+def iter_file_selector_documents(root: Path) -> List[Path]:
+    """Return selectable documents under root while pruning ignored folders."""
+    files: List[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dpath = dirpath.lower()
+        if any(key in dpath for key in SKIP_PATH_KEYWORDS):
+            dirnames[:] = []
+            continue
+
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+
+        for filename in filenames:
+            if filename.startswith("~$"):
+                continue
+            path = Path(dirpath) / filename
+            if path.suffix.lower() in FILE_SELECTOR_EXTS:
+                files.append(path)
+    return files
+
+
+def scan_file_selector_root(root: Path) -> Tuple[List[Path], Dict[str, Dict[str, Any]]]:
+    """Scan root once and return selectable documents plus all visited directories."""
+    files: List[Path] = []
+    directories: Dict[str, Dict[str, Any]] = {}
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        directory = Path(dirpath)
+        dpath = str(directory).lower()
+        if any(key in dpath for key in SKIP_PATH_KEYWORDS):
+            dirnames[:] = []
+            continue
+
+        directories[str(directory)] = {
+            "path": str(directory),
+            "name": directory.name,
+            "parent": str(directory.parent) if directory != root else None,
+            "scanned_at": utc_now_text(),
+        }
+
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+
+        for filename in filenames:
+            if filename.startswith("~$"):
+                continue
+            path = directory / filename
+            if path.suffix.lower() in FILE_SELECTOR_EXTS:
+                files.append(path)
+
+    return files, directories
 
 
 def should_skip_by_name_or_path(path: Path) -> Optional[str]:
@@ -554,6 +606,200 @@ def load_snippet_tool_state(
 
     docs_by_source, document_paths = group_snippets_by_source(snippets)
     return snippets, review_state, docs_by_source, document_paths
+
+
+def utc_now_text() -> str:
+    """Return the current UTC time in the cache timestamp format."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def load_document_cache(cache_path: Path) -> Dict[str, Any]:
+    """Load the document snippet cache, returning an empty cache on failure."""
+    if not cache_path.exists():
+        return {"documents": {}, "directories": {}}
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"documents": {}, "directories": {}}
+    if not isinstance(cache, dict):
+        return {"documents": {}, "directories": {}}
+    if not isinstance(cache.get("documents"), dict):
+        cache["documents"] = {}
+    if not isinstance(cache.get("directories"), dict):
+        cache["directories"] = {}
+    return cache
+
+
+def write_document_cache(cache_path: Path, cache: Dict[str, Any]) -> None:
+    """Persist the document snippet cache to disk."""
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def extracted_source_paths(snippets_path: Path) -> set[str]:
+    """Return source paths that already have snippets in the review dataset."""
+    if not snippets_path.exists():
+        return set()
+    try:
+        snippets = json.loads(snippets_path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    if not isinstance(snippets, list):
+        return set()
+    return {str(snippet.get("source_path", "")) for snippet in snippets if snippet.get("source_path")}
+
+
+def document_metadata(path: Path) -> Optional[Dict[str, int]]:
+    """Return cache metadata used to detect whether a document changed."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return {"mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
+
+
+def document_cache_entry_is_fresh(entry: Dict[str, Any], metadata: Dict[str, int]) -> bool:
+    """Return whether a cache entry matches the current document metadata."""
+    return (
+        entry.get("mtime_ns") == metadata["mtime_ns"]
+        and entry.get("size") == metadata["size"]
+    )
+
+
+def analyze_document_for_cache(
+    path: Path,
+    extracted_paths: set[str],
+    snippets_per_file: int = 200,
+) -> Optional[Dict[str, Any]]:
+    """Analyze one document and return its cache entry."""
+    metadata = document_metadata(path)
+    if metadata is None:
+        return None
+
+    snippets, stats = process_file(path, snippets_per_file=snippets_per_file)
+    return {
+        "path": str(path),
+        "mtime_ns": metadata["mtime_ns"],
+        "size": metadata["size"],
+        "scanned_at": utc_now_text(),
+        "has_usable_snippet": bool(snippets),
+        "snippet_count": len(snippets),
+        "snippets_extracted": str(path) in extracted_paths,
+        "stats": dict(sorted(stats.items())),
+    }
+
+
+def refresh_document_cache(
+    root: Path,
+    cache_path: Path,
+    snippets_path: Path,
+    snippets_per_file: int = 200,
+) -> Dict[str, Any]:
+    """Refresh stale document cache entries under root and persist the cache."""
+    cache = load_document_cache(cache_path)
+    documents = cache.setdefault("documents", {})
+    selector_documents, directories = scan_file_selector_root(root)
+    cache["directories"] = directories
+    extracted_paths = extracted_source_paths(snippets_path)
+    current_paths: set[str] = set()
+
+    for path in sorted(selector_documents):
+        path_key = str(path)
+        current_paths.add(path_key)
+        metadata = document_metadata(path)
+        if metadata is None:
+            documents.pop(path_key, None)
+            continue
+
+        entry = documents.get(path_key)
+        if isinstance(entry, dict) and document_cache_entry_is_fresh(entry, metadata):
+            entry["snippets_extracted"] = path_key in extracted_paths
+            documents[path_key] = entry
+            continue
+
+        analyzed_entry = analyze_document_for_cache(
+            path,
+            extracted_paths,
+            snippets_per_file=snippets_per_file,
+        )
+        if analyzed_entry is not None:
+            documents[path_key] = analyzed_entry
+
+    for cached_path in list(documents):
+        if cached_path not in current_paths:
+            del documents[cached_path]
+
+    cache["root"] = str(root)
+    cache["refreshed_at"] = utc_now_text()
+    write_document_cache(cache_path, cache)
+    return cache
+
+
+def build_cached_snippet_file_tree(root: Path, cache: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Build a useful tree from cached directories and usable cached documents."""
+    documents = cache.get("documents", {})
+    directories = cache.get("directories", {})
+    if not isinstance(documents, dict) or not isinstance(directories, dict):
+        return None
+
+    usable_paths = [
+        Path(path)
+        for path, entry in documents.items()
+        if isinstance(entry, dict) and entry.get("has_usable_snippet")
+    ]
+    usable_paths.sort(key=lambda p: str(p).lower())
+
+    useful_directory_paths: set[str] = {str(root)}
+    for path in usable_paths:
+        try:
+            path.relative_to(root)
+        except ValueError:
+            continue
+        for parent in [path.parent, *path.parents]:
+            try:
+                parent.relative_to(root)
+            except ValueError:
+                break
+            useful_directory_paths.add(str(parent))
+            if parent == root:
+                break
+
+    root_node: Dict[str, Any] = {"path": root, "type": "directory", "children": []}
+    nodes_by_path: Dict[str, Dict[str, Any]] = {str(root): root_node}
+    cached_directory_paths = [
+        Path(path)
+        for path in directories
+        if path in useful_directory_paths and path != str(root)
+    ]
+    cached_directory_paths.sort(key=lambda p: (len(p.parts), str(p).lower()))
+
+    for directory in cached_directory_paths:
+        parent_node = nodes_by_path.get(str(directory.parent))
+        if parent_node is None:
+            continue
+        node = {"path": directory, "type": "directory", "children": []}
+        parent_node["children"].append(node)
+        nodes_by_path[str(directory)] = node
+
+    for path in usable_paths:
+        parent_node = nodes_by_path.get(str(path.parent))
+        if parent_node is not None:
+            parent_node["children"].append({"path": path, "type": "file"})
+
+    sort_cached_tree(root_node)
+
+    if not root_node["children"]:
+        return None
+    return root_node
+
+
+def sort_cached_tree(node: Dict[str, Any]) -> None:
+    """Sort cached tree children by directory-first display order."""
+    children = node.get("children", [])
+    children.sort(key=lambda child: (child.get("type") != "directory", child["path"].name.lower()))
+    for child in children:
+        if child.get("type") == "directory":
+            sort_cached_tree(child)
 
 
 def build_txt_file_tree(path: Path) -> Optional[Dict[str, Any]]:

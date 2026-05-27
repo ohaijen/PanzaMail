@@ -14,11 +14,12 @@ from panza.entities.instruction import Instruction, SnippetInstruction
 from panza.interface.snippet_utils import (
     apply_review_decision,
     apply_review_decision_bulk,
-    build_txt_file_tree,
+    build_cached_snippet_file_tree,
     export_kept_snippets,
     load_snippet_tool_state,
     persist_review_state,
     read_preview_file,
+    refresh_document_cache,
     review_counts_text,
     split_file_into_review_dataset,
 )
@@ -74,6 +75,7 @@ class PanzaNiceGUI:
         self.review_state_path = self.snippet_tool_root / "data" / "review_state.json"
         self.kept_jsonl_path = self.snippet_tool_root / "data" / "kept_snippets.jsonl"
         self.kept_json_path = self.snippet_tool_root / "data" / "kept_snippets.json"
+        self.document_cache_path = self.snippet_tool_root / "data" / "document_cache.json"
         self.review_snippets: List[Dict[str, Any]] = []
         self.review_state: Dict[str, Any] = {}
         self.review_docs_by_source: Dict[str, List[Dict[str, Any]]] = {}
@@ -425,19 +427,28 @@ class PanzaNiceGUI:
         self.review_current_source = None
 
     def _select_file(self, path: Path) -> None:
+        path = Path(path)
         self.selected_file_path = path
+        print(self.selected_file_path)
         content = read_preview_file(path)
         if self.selected_file_path_label is not None:
             self.selected_file_path_label.text = str(path)
             self.selected_file_path_label.update()
+        print(content)
         if self.selected_file_viewer is not None:
-            self.selected_file_viewer.value = content
+            try:
+                self.selected_file_viewer.set_value(content)
+            except Exception:
+                self.selected_file_viewer.value = content
             self.selected_file_viewer.update()
+        print("updated viewer")
         if self.selected_file_split_button is not None:
             self.selected_file_split_button.visible = True
             self.selected_file_split_button.update()
         if self.selected_file_split_status_label is not None:
-            self.selected_file_split_status_label.text = ""
+            self.selected_file_split_status_label.text = (
+                content if content.startswith("Could not read file:") else ""
+            )
             self.selected_file_split_status_label.update()
 
     def _set_selected_file_split_status(self, status: str) -> None:
@@ -474,6 +485,11 @@ class PanzaNiceGUI:
 
             self._load_snippet_tool_state()
             self._load_review_snippet()
+            refresh_document_cache(
+                self.file_selector_root,
+                self.document_cache_path,
+                self.snippets_path,
+            )
             self._set_selected_file_split_status(
                 f"Created {created_count} snippet(s); added {added_count} new snippet(s) to review."
             )
@@ -508,9 +524,14 @@ class PanzaNiceGUI:
         if not self.file_selector_root.exists():
             ui.label(f"Directory not found: {self.file_selector_root}").classes("text-sm text-red-600")
             return
-        file_tree = build_txt_file_tree(self.file_selector_root)
+        cache = refresh_document_cache(
+            self.file_selector_root,
+            self.document_cache_path,
+            self.snippets_path,
+        )
+        file_tree = build_cached_snippet_file_tree(self.file_selector_root, cache)
         if file_tree is None:
-            ui.label("No .txt files found.").classes("text-sm text-gray-600")
+            ui.label("No .txt files with usable snippets found.").classes("text-sm text-gray-600")
             return
         self._render_file_tree_node(file_tree, self.file_tree_container)
 
