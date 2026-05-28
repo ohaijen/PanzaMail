@@ -16,6 +16,7 @@ from panza.interface.snippet_utils import (
     apply_review_decision_bulk,
     build_cached_snippet_file_tree,
     export_kept_snippets,
+    load_document_cache,
     load_snippet_tool_state,
     persist_review_state,
     read_preview_file,
@@ -85,6 +86,7 @@ class PanzaNiceGUI:
         self.review_status_label = None
         self.review_counts_label = None
         self.review_source_label = None
+        self.review_filter_source: Optional[str] = None
 
         self.file_selector_root = Path("/Users/jen/Downloads/")
         if not self.file_selector_root.exists():
@@ -95,6 +97,7 @@ class PanzaNiceGUI:
         self.selected_file_split_button = None
         self.selected_file_split_status_label = None
         self.selected_file_path: Optional[Path] = None
+        self.document_cache: Dict[str, Any] = {}
 
         self.prompt_input = None
         self.output_area = None
@@ -428,21 +431,19 @@ class PanzaNiceGUI:
     def _select_file(self, path: Path) -> None:
         path = Path(path)
         self.selected_file_path = path
-        print(self.selected_file_path)
         content = read_preview_file(path)
         if self.selected_file_path_label is not None:
             self.selected_file_path_label.text = str(path)
             self.selected_file_path_label.update()
-        print(content)
         if self.selected_file_viewer is not None:
             try:
                 self.selected_file_viewer.set_value(content)
             except Exception:
                 self.selected_file_viewer.value = content
             self.selected_file_viewer.update()
-        print("updated viewer")
         if self.selected_file_split_button is not None:
             self.selected_file_split_button.visible = True
+            self._update_selected_file_action_button()
             self.selected_file_split_button.update()
         if self.selected_file_split_status_label is not None:
             self.selected_file_split_status_label.text = (
@@ -450,10 +451,56 @@ class PanzaNiceGUI:
             )
             self.selected_file_split_status_label.update()
 
+    def _selected_file_cache_entry(self) -> Dict[str, Any]:
+        if self.selected_file_path is None:
+            return {}
+        if not self.document_cache:
+            self.document_cache = load_document_cache(self.document_cache_path)
+        documents = self.document_cache.get("documents", {})
+        if not isinstance(documents, dict):
+            return {}
+        entry = documents.get(str(self.selected_file_path), {})
+        return entry if isinstance(entry, dict) else {}
+
+    def _selected_file_extracted_count(self) -> int:
+        entry = self._selected_file_cache_entry()
+        return int(entry.get("snippets_extracted_count", 0) or 0)
+
+    def _update_selected_file_action_button(self) -> None:
+        if self.selected_file_split_button is None:
+            return
+        label = "Show snippets" if self._selected_file_extracted_count() > 0 else "Split into snippets"
+        try:
+            self.selected_file_split_button.set_text(label)
+        except Exception:
+            self.selected_file_split_button.text = label
+        self.selected_file_split_button.update()
+
     def _set_selected_file_split_status(self, status: str) -> None:
         if self.selected_file_split_status_label is not None:
             self.selected_file_split_status_label.text = status
             self.selected_file_split_status_label.update()
+
+    async def _selected_file_action(self) -> None:
+        if self._selected_file_extracted_count() > 0:
+            self._show_selected_file_snippets()
+            return
+        await self._split_selected_file_into_snippets()
+
+    def _show_selected_file_snippets(self) -> None:
+        if self.selected_file_path is None:
+            self._set_selected_file_split_status("Select a .txt file first.")
+            return
+        source_path = str(self.selected_file_path)
+        if source_path not in self.review_docs_by_source:
+            self._load_snippet_tool_state()
+        if source_path not in self.review_docs_by_source:
+            self._set_selected_file_split_status("No extracted snippets found for this document.")
+            return
+        self.review_filter_source = source_path
+        self._load_review_snippet()
+        snippet_count = len(self.review_docs_by_source.get(source_path, []))
+        self._set_selected_file_split_status(f"Showing {snippet_count} snippet(s) for this document.")
 
     async def _split_selected_file_into_snippets(self) -> None:
         if self.selected_file_path is None:
@@ -484,11 +531,8 @@ class PanzaNiceGUI:
 
             self._load_snippet_tool_state()
             self._load_review_snippet()
-            refresh_document_cache(
-                self.file_selector_root,
-                self.document_cache_path,
-                self.snippets_path,
-            )
+            self._load_file_tree()
+            self._update_selected_file_action_button()
             self._set_selected_file_split_status(
                 f"Created {created_count} snippet(s); added {added_count} new snippet(s) to review."
             )
@@ -498,6 +542,14 @@ class PanzaNiceGUI:
             if split_button is not None:
                 split_button.enabled = True
                 split_button.update()
+
+    def _file_tree_button_label(self, node: Dict[str, Any]) -> str:
+        path = node["path"]
+        entry = node.get("cache_entry", {})
+        extracted = int(entry.get("snippets_extracted_count", 0) or 0)
+        kept = int(entry.get("snippets_kept_count", 0) or 0)
+        deleted = int(entry.get("snippets_deleted_count", 0) or 0)
+        return f"{path.name}  | extracted {extracted} | kept {kept} | deleted {deleted}"
 
     def _render_file_tree_node(self, node: Dict[str, Any], container: Any, depth: int = 0) -> None:
         path = node["path"]
@@ -510,7 +562,7 @@ class PanzaNiceGUI:
         else:
             with container:
                 ui.button(
-                    path.name,
+                    self._file_tree_button_label(node),
                     on_click=lambda selected_path=path: self._select_file(selected_path),
                 ).props("flat").classes("w-full text-left").style(
                     f"margin-left: {depth * 16}px;"
@@ -523,12 +575,18 @@ class PanzaNiceGUI:
         if not self.file_selector_root.exists():
             ui.label(f"Directory not found: {self.file_selector_root}").classes("text-sm text-red-600")
             return
-        cache = refresh_document_cache(
-            self.file_selector_root,
-            self.document_cache_path,
-            self.snippets_path,
-        )
-        file_tree = build_cached_snippet_file_tree(self.file_selector_root, cache)
+        try:
+            cache = refresh_document_cache(
+                self.file_selector_root,
+                self.document_cache_path,
+                self.snippets_path,
+                self.review_state_path,
+            )
+            self.document_cache = cache
+            file_tree = build_cached_snippet_file_tree(self.file_selector_root, cache)
+        except Exception as exc:
+            ui.label(f"Could not load document browser: {exc}").classes("text-sm text-red-600")
+            return
         if file_tree is None:
             ui.label("No .txt files with usable snippets found.").classes("text-sm text-gray-600")
             return
@@ -547,8 +605,20 @@ class PanzaNiceGUI:
             return
 
         self.review_cards_container.clear()
-        total_docs = len(self.review_document_paths)
-        total_snippets = len(self.review_snippets)
+        document_paths = self.review_document_paths
+        if self.review_filter_source is not None:
+            document_paths = (
+                [self.review_filter_source]
+                if self.review_filter_source in self.review_docs_by_source
+                else []
+            )
+        displayed_snippets = [
+            snippet
+            for source_path in document_paths
+            for snippet in self.review_docs_by_source.get(source_path, [])
+        ]
+        total_docs = len(document_paths)
+        total_snippets = len(displayed_snippets)
 
         if total_snippets == 0:
             with self.review_cards_container:
@@ -557,7 +627,7 @@ class PanzaNiceGUI:
                 self.review_status_label.text = "No snippets available."
                 self.review_status_label.update()
             if self.review_counts_label is not None:
-                self.review_counts_label.text = review_counts_text(self.review_snippets, self.review_state)
+                self.review_counts_label.text = review_counts_text(displayed_snippets, self.review_state)
                 self.review_counts_label.update()
             if self.review_source_label is not None:
                 self.review_source_label.text = "0"
@@ -571,11 +641,11 @@ class PanzaNiceGUI:
             self.review_status_label.text = f"Total snippets: {total_snippets}"
             self.review_status_label.update()
         if self.review_counts_label is not None:
-            self.review_counts_label.text = review_counts_text(self.review_snippets, self.review_state)
+            self.review_counts_label.text = review_counts_text(displayed_snippets, self.review_state)
             self.review_counts_label.update()
 
         with self.review_cards_container:
-            for source_path in self.review_document_paths:
+            for source_path in document_paths:
                 snippets = self.review_docs_by_source.get(source_path, [])
                 with ui.card().classes("w-full p-4 mb-4"):
                     ui.markdown(f"### {source_path}")
@@ -651,6 +721,7 @@ class PanzaNiceGUI:
         apply_review_decision(self.review_state, snippet_id, decision)
         persist_review_state(self.review_state_path, self.review_state)
         self._export_kept_snippets()
+        self._load_file_tree()
         self._load_review_snippet()
 
     async def _review_action_bulk(self, decision: str, source_path: str) -> None:
@@ -660,6 +731,7 @@ class PanzaNiceGUI:
         apply_review_decision_bulk(self.review_state, snippets, decision)
         persist_review_state(self.review_state_path, self.review_state)
         self._export_kept_snippets()
+        self._load_file_tree()
         self._load_review_snippet()
 
     def _build_review_tab(self) -> None:
@@ -669,7 +741,7 @@ class PanzaNiceGUI:
             with ui.column().classes("w-1/3").style("max-height: 420px; overflow:auto; border:1px solid #ddd; padding: 12px; background:#fafafa;"):
                 ui.label(f"Base directory: {self.file_selector_root}").classes("text-sm text-gray-600")
                 self.file_tree_container = ui.column().classes("w-full gap-2")
-                self._load_file_tree()
+                ui.label("Loading documents...").classes("text-sm text-gray-600")
             with ui.column().classes("w-2/3").style("min-height: 420px;"):
                 ui.label("Selected file preview").classes("text-sm text-gray-600")
                 self.selected_file_path_label = ui.label("No file selected").classes("text-sm text-gray-600")
@@ -678,10 +750,11 @@ class PanzaNiceGUI:
                 ).props("readonly").style("width: 100%; min-height: 360px;")
                 self.selected_file_split_button = ui.button(
                     "Split into snippets",
-                    on_click=self._split_selected_file_into_snippets,
+                    on_click=self._selected_file_action,
                 ).props("color=primary")
                 self.selected_file_split_button.visible = False
                 self.selected_file_split_status_label = ui.label("").classes("text-sm text-gray-600")
+        ui.timer(0.1, self._load_file_tree, once=True)
 
         ui.label("Review candidate snippets and keep the ones you want to add to training data. All candidates are shown below grouped by document path.").classes(
             "text-sm text-gray-600"

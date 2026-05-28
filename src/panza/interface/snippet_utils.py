@@ -649,6 +649,76 @@ def extracted_source_paths(snippets_path: Path) -> set[str]:
     return {str(snippet.get("source_path", "")) for snippet in snippets if snippet.get("source_path")}
 
 
+def review_counts_by_source(
+    snippets_path: Path,
+    review_state_path: Optional[Path],
+) -> Dict[str, Dict[str, int]]:
+    """Return extracted, kept, and deleted snippet counts grouped by source path."""
+    if not snippets_path.exists():
+        return {}
+    try:
+        snippets = json.loads(snippets_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(snippets, list):
+        return {}
+
+    decisions: Dict[str, Any] = {}
+    if review_state_path is not None and review_state_path.exists():
+        try:
+            review_state = json.loads(review_state_path.read_text(encoding="utf-8"))
+            if isinstance(review_state, dict) and isinstance(review_state.get("decisions"), dict):
+                decisions = review_state["decisions"]
+        except Exception:
+            decisions = {}
+
+    counts_by_source: Dict[str, Dict[str, int]] = {}
+    for snippet in snippets:
+        if not isinstance(snippet, dict):
+            continue
+        source_path = str(snippet.get("source_path", ""))
+        if not source_path:
+            continue
+        counts = counts_by_source.setdefault(
+            source_path,
+            {
+                "snippets_extracted_count": 0,
+                "snippets_kept_count": 0,
+                "snippets_deleted_count": 0,
+            },
+        )
+        counts["snippets_extracted_count"] += 1
+        decision = decisions.get(str(snippet.get("id", "")))
+        if decision == "keep":
+            counts["snippets_kept_count"] += 1
+        elif decision == "delete":
+            counts["snippets_deleted_count"] += 1
+
+    return counts_by_source
+
+
+def empty_review_counts() -> Dict[str, int]:
+    """Return an empty per-document review count record."""
+    return {
+        "snippets_extracted_count": 0,
+        "snippets_kept_count": 0,
+        "snippets_deleted_count": 0,
+    }
+
+
+def apply_document_review_counts(
+    entry: Dict[str, Any],
+    counts_by_source: Dict[str, Dict[str, int]],
+) -> Dict[str, Any]:
+    """Copy per-document review counts into a cache entry."""
+    counts = counts_by_source.get(str(entry.get("path", "")), empty_review_counts())
+    entry["snippets_extracted"] = counts["snippets_extracted_count"] > 0
+    entry["snippets_extracted_count"] = counts["snippets_extracted_count"]
+    entry["snippets_kept_count"] = counts["snippets_kept_count"]
+    entry["snippets_deleted_count"] = counts["snippets_deleted_count"]
+    return entry
+
+
 def document_metadata(path: Path) -> Optional[Dict[str, int]]:
     """Return cache metadata used to detect whether a document changed."""
     try:
@@ -668,7 +738,7 @@ def document_cache_entry_is_fresh(entry: Dict[str, Any], metadata: Dict[str, int
 
 def analyze_document_for_cache(
     path: Path,
-    extracted_paths: set[str],
+    counts_by_source: Dict[str, Dict[str, int]],
     snippets_per_file: int = 200,
 ) -> Optional[Dict[str, Any]]:
     """Analyze one document and return its cache entry."""
@@ -677,22 +747,23 @@ def analyze_document_for_cache(
         return None
 
     snippets, stats = process_file(path, snippets_per_file=snippets_per_file)
-    return {
+    entry = {
         "path": str(path),
         "mtime_ns": metadata["mtime_ns"],
         "size": metadata["size"],
         "scanned_at": utc_now_text(),
         "has_usable_snippet": bool(snippets),
         "snippet_count": len(snippets),
-        "snippets_extracted": str(path) in extracted_paths,
         "stats": dict(sorted(stats.items())),
     }
+    return apply_document_review_counts(entry, counts_by_source)
 
 
 def refresh_document_cache(
     root: Path,
     cache_path: Path,
     snippets_path: Path,
+    review_state_path: Optional[Path] = None,
     snippets_per_file: int = 200,
 ) -> Dict[str, Any]:
     """Refresh stale document cache entries under root and persist the cache."""
@@ -700,7 +771,7 @@ def refresh_document_cache(
     documents = cache.setdefault("documents", {})
     selector_documents, directories = scan_file_selector_root(root)
     cache["directories"] = directories
-    extracted_paths = extracted_source_paths(snippets_path)
+    counts_by_source = review_counts_by_source(snippets_path, review_state_path)
     current_paths: set[str] = set()
 
     for path in sorted(selector_documents):
@@ -713,13 +784,14 @@ def refresh_document_cache(
 
         entry = documents.get(path_key)
         if isinstance(entry, dict) and document_cache_entry_is_fresh(entry, metadata):
-            entry["snippets_extracted"] = path_key in extracted_paths
+            entry["path"] = path_key
+            apply_document_review_counts(entry, counts_by_source)
             documents[path_key] = entry
             continue
 
         analyzed_entry = analyze_document_for_cache(
             path,
-            extracted_paths,
+            counts_by_source,
             snippets_per_file=snippets_per_file,
         )
         if analyzed_entry is not None:
@@ -784,7 +856,13 @@ def build_cached_snippet_file_tree(root: Path, cache: Dict[str, Any]) -> Optiona
     for path in usable_paths:
         parent_node = nodes_by_path.get(str(path.parent))
         if parent_node is not None:
-            parent_node["children"].append({"path": path, "type": "file"})
+            parent_node["children"].append(
+                {
+                    "path": path,
+                    "type": "file",
+                    "cache_entry": documents.get(str(path), {}),
+                }
+            )
 
     sort_cached_tree(root_node)
 
@@ -930,8 +1008,12 @@ def apply_review_decision_bulk(
 def review_counts_text(review_snippets: List[Dict[str, Any]], review_state: Dict[str, Any]) -> str:
     """Return a compact review progress summary for the UI."""
     decisions = review_state.get("decisions", {})
-    kept = sum(1 for value in decisions.values() if value == "keep")
-    deleted = sum(1 for value in decisions.values() if value == "delete")
+    visible_decisions = [
+        decisions.get(str(snippet.get("id", "")))
+        for snippet in review_snippets
+    ]
+    kept = sum(1 for value in visible_decisions if value == "keep")
+    deleted = sum(1 for value in visible_decisions if value == "delete")
     total = len(review_snippets)
     pending = max(total - kept - deleted, 0)
     return f"Total: {total} | Kept: {kept} | Deleted: {deleted} | Pending: {pending}"
