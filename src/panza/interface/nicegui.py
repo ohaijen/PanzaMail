@@ -43,7 +43,7 @@ class PanzaNiceGUI:
     def __init__(
         self,
         writer: PanzaWriter,
-        pre_personalization_writer: PanzaWriter | None,
+        assistant: PanzaWriter,
         use_pre_personalization_model: bool = True,
         host: str = "localhost",
         port: int = 8080,
@@ -51,8 +51,7 @@ class PanzaNiceGUI:
         training_data_path: str | None = None,
     ):
         self.writer = writer
-        # allow an explicit pre-personalization writer; fall back to the main writer
-        self.pre_personalization_writer = pre_personalization_writer or writer
+        self.pre_personalization_writer = assistant
         self.host = host
         self.port = port
         self.username = username
@@ -148,7 +147,7 @@ class PanzaNiceGUI:
         if self.username:
             return self.username
 
-        retriever = getattr(getattr(self.writer, "prompt_builder", None), "retriever", None)
+        retriever = getattr(getattr(self.writer, "prompting", None), "retriever", None)
         index_name = getattr(retriever, "index_name", None)
         if index_name:
             return str(index_name)

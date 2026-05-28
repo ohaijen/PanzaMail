@@ -1,8 +1,14 @@
+defaults:
+  - /writer: email
+  - _self_
+
 input_file: ${panza_workspace}/data/${user.username}/test.jsonl
+remove_prompt_from_stream: true
 output_path: ""
 batch_size: 4
 responses_per_prompt: 1
-checkpoint: ${checkpoint}
+checkpoint: ${interfaces.writer.llm.checkpoint}
+#checkpoint: "Qwen/Qwen3.5-4B"
 panza_workspace: ${panza_workspace}
 compute_metrics: true  # Metrics (especially MAUVE) are expensive; keep off for fast generation.
 username: ${user.username}

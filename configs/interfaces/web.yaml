@@ -1,3 +1,7 @@
+defaults:
+  - /writer: email
+  - _self_
+
 port: 5001
 _target_: panza.interface.PanzaWebService
 remove_prompt_from_stream: true

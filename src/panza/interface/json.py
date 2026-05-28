@@ -2,10 +2,12 @@ from panza.entities.instruction import EmailInstruction, SnippetInstruction
 from panza.writer import PanzaWriter
 
 import json
+import hydra
 import numpy as np
 import os
 import re
 import time
+from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
 import string
@@ -195,7 +197,8 @@ class PanzaJSON:
     def __init__(
         self,
         writer: PanzaWriter,
-        pre_personalization_writer: PanzaWriter,
+        #pre_personalization_writer: PanzaWriter,
+        remove_prompt_from_stream: bool,
         checkpoint: str,
         panza_workspace: str,
         input_file: str,
@@ -206,7 +209,12 @@ class PanzaJSON:
         compute_metrics: bool,
         username: str,
     ):
+
+        # Instantiate Panza writer
+        assert isinstance(writer, PanzaWriter), "Failed to instantiate PanzaWriter"
         self.writer = writer
+        self.writer.llm.remove_prompt_from_stream = remove_prompt_from_stream
+
         infer_start = time.perf_counter()
         responses, has_goldens = self.assemble_responses(
             input_file, batch_size, False, responses_per_prompt

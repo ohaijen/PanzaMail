@@ -6,8 +6,8 @@ from .prompting import PromptBuilder
 
 
 class PanzaWriter:
-    def __init__(self, prompt_builder: PromptBuilder, llm: LLM):
-        self.prompt_builder = prompt_builder
+    def __init__(self, prompting: PromptBuilder, llm: LLM):
+        self.prompt_builder = prompting
         self.llm = llm
 
     def run(
@@ -17,7 +17,7 @@ class PanzaWriter:
         iterator: bool = False,
         return_prompt: bool = False,
     ) -> str | Iterator[str] | Tuple[str, str] | Tuple[Iterator[str], str]:
-        prompt = self.prompt_builder.build_prompt(instruction)
+        prompt = self.prompting.build_prompt(instruction)
         messages = self._create_user_message(content=prompt)
 
         if stream:

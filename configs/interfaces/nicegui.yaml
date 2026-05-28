@@ -1,4 +1,21 @@
+defaults:
+  - /writer@assistant: email
+  - /writer: email
+  # - /writer/llm@assistant.llm: transformers
+  # - /writer/llm@personalizer.llm: transformers
+  - _self_
+
+
 _target_: panza.interface.PanzaNiceGUI
+
+assistant: 
+  llm:
+    checkpoint:  "Qwen/Qwen3.5-4B"
+
+writer: 
+  llm:
+    checkpoint:  "Qwen/Qwen3.5-4B"
+
 host: localhost
 port: 8080
 username: ${user.username}

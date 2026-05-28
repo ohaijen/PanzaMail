@@ -203,7 +203,7 @@ def main(cfg: DictConfig) -> None:
             num_iterations = len(madlibs)
             for i, [name, madlib] in enumerate(madlibs):
                 print(default_prompt, madlib)
-                writer.prompt_builder.summarization_prompt = default_prompt.format(**madlib)
+                writer.prompting.summarization_prompt = default_prompt.format(**madlib)
 
                 if i < num_iterations - 1:
                     output_path = cfg.summarized_emails_path.replace(".jsonl", f"_{name}.jsonl")

@@ -1,2 +1,6 @@
+defaults:
+  - /writer: email
+  - _self_
+
 _target_: panza.interface.PanzaGUI
 remove_prompt_from_stream: true

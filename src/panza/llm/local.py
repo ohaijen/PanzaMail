@@ -35,7 +35,7 @@ class LocalLLM(LLM):
         name: str,
         checkpoint: str,
         device: str,
-        sampling_parameters: Dict,
+        sampling: Dict,
         dtype: str,
         load_in_4bit: bool,
         remove_prompt_from_stream: bool,
@@ -43,7 +43,7 @@ class LocalLLM(LLM):
         self.load_in_4bit = load_in_4bit
         self._check_installation()
 
-        super().__init__(name, sampling_parameters)
+        super().__init__(name, sampling)
         self.checkpoint = checkpoint
         self.device, self.device_map = self._resolve_device(device)
 

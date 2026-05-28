@@ -1,2 +1,6 @@
+defaults:
+  - /writer: email
+  - _self_
+
 _target_: panza.interface.PanzaCLI
 remove_prompt_from_stream: true # This will be used to overwrite a setting in the writer config.
