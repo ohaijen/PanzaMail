@@ -87,6 +87,7 @@ class PanzaNiceGUI:
         self.review_counts_label = None
         self.review_source_label = None
         self.review_filter_source: Optional[str] = None
+        self.review_decision_filter: Optional[str] = None
 
         self.file_selector_root = Path("/Users/jen/Downloads/")
         if not self.file_selector_root.exists():
@@ -498,9 +499,22 @@ class PanzaNiceGUI:
             self._set_selected_file_split_status("No extracted snippets found for this document.")
             return
         self.review_filter_source = source_path
+        self.review_decision_filter = None
         self._load_review_snippet()
         snippet_count = len(self.review_docs_by_source.get(source_path, []))
         self._set_selected_file_split_status(f"Showing {snippet_count} snippet(s) for this document.")
+
+    def _set_review_filter(self, decision_filter: Optional[str]) -> None:
+        self.review_filter_source = None
+        self.review_decision_filter = decision_filter
+        self._load_review_snippet()
+
+    def _snippet_matches_review_filter(self, snippet: Dict[str, Any]) -> bool:
+        if self.review_decision_filter is None:
+            return True
+        snippet_id = str(snippet.get("id", ""))
+        decision = self.review_state.get("decisions", {}).get(snippet_id, "pending")
+        return decision == self.review_decision_filter
 
     async def _split_selected_file_into_snippets(self) -> None:
         if self.selected_file_path is None:
@@ -616,6 +630,15 @@ class PanzaNiceGUI:
             snippet
             for source_path in document_paths
             for snippet in self.review_docs_by_source.get(source_path, [])
+            if self._snippet_matches_review_filter(snippet)
+        ]
+        document_paths = [
+            source_path
+            for source_path in document_paths
+            if any(
+                self._snippet_matches_review_filter(snippet)
+                for snippet in self.review_docs_by_source.get(source_path, [])
+            )
         ]
         total_docs = len(document_paths)
         total_snippets = len(displayed_snippets)
@@ -646,22 +669,26 @@ class PanzaNiceGUI:
 
         with self.review_cards_container:
             for source_path in document_paths:
-                snippets = self.review_docs_by_source.get(source_path, [])
+                snippets = [
+                    snippet
+                    for snippet in self.review_docs_by_source.get(source_path, [])
+                    if self._snippet_matches_review_filter(snippet)
+                ]
                 with ui.card().classes("w-full p-4 mb-4"):
                     ui.markdown(f"### {source_path}")
                     ui.label(f"{len(snippets)} candidate snippet(s)").classes("text-sm text-gray-600")
                     with ui.row().classes("w-full gap-4 items-center").style("margin-top: 12px;"):
-                        async def keep_all_click(current_source=source_path):
+                        async def keep_all_click(current_snippets=snippets):
                             keep_all_button.enabled = False
                             keep_all_button.update()
                             await asyncio.sleep(0)
-                            await self._review_action_bulk("keep", current_source)
+                            await self._review_action_bulk("keep", current_snippets)
 
-                        async def delete_all_click(current_source=source_path):
+                        async def delete_all_click(current_snippets=snippets):
                             delete_all_button.enabled = False
                             delete_all_button.update()
                             await asyncio.sleep(0)
-                            await self._review_action_bulk("delete", current_source)
+                            await self._review_action_bulk("delete", current_snippets)
 
                         keep_all_button = ui.button(
                             "Keep all",
@@ -724,10 +751,9 @@ class PanzaNiceGUI:
         self._load_file_tree()
         self._load_review_snippet()
 
-    async def _review_action_bulk(self, decision: str, source_path: str) -> None:
-        if not source_path:
+    async def _review_action_bulk(self, decision: str, snippets: List[Dict[str, Any]]) -> None:
+        if not snippets:
             return
-        snippets = self.review_docs_by_source.get(source_path, [])
         apply_review_decision_bulk(self.review_state, snippets, decision)
         persist_review_state(self.review_state_path, self.review_state)
         self._export_kept_snippets()
@@ -754,6 +780,11 @@ class PanzaNiceGUI:
                 ).props("color=primary")
                 self.selected_file_split_button.visible = False
                 self.selected_file_split_status_label = ui.label("").classes("text-sm text-gray-600")
+        with ui.row().classes("w-full gap-3 items-center").style("margin-bottom: 16px;"):
+            ui.button("All snippets", on_click=lambda: self._set_review_filter(None)).props("flat")
+            ui.button("Kept", on_click=lambda: self._set_review_filter("keep")).props("flat color=positive")
+            ui.button("Deleted", on_click=lambda: self._set_review_filter("delete")).props("flat color=negative")
+            ui.button("Unrated", on_click=lambda: self._set_review_filter("pending")).props("flat color=secondary")
         ui.timer(0.1, self._load_file_tree, once=True)
 
         ui.label("Review candidate snippets and keep the ones you want to add to training data. All candidates are shown below grouped by document path.").classes(
