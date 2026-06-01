@@ -70,12 +70,12 @@ class PanzaNiceGUI:
                 or self.default_evaluation_path
             )
 
-        self.snippet_tool_root = self._repo_root() / "panza_snippet_tool"
-        self.snippets_path = self.snippet_tool_root / "data" / "snippets.json"
-        self.review_state_path = self.snippet_tool_root / "data" / "review_state.json"
-        self.kept_jsonl_path = self.snippet_tool_root / "data" / "kept_snippets.jsonl"
-        self.kept_json_path = self.snippet_tool_root / "data" / "kept_snippets.json"
-        self.document_cache_path = self.snippet_tool_root / "data" / "document_cache.json"
+        self.snippet_collection_root = self._find_snippet_collection_root()
+        self.snippets_path = self.snippet_collection_root / "snippets.json"
+        self.review_state_path = self.snippet_collection_root / "review_state.json"
+        self.kept_jsonl_path = self.snippet_collection_root / "kept_snippets.jsonl"
+        self.kept_json_path = self.snippet_collection_root / "kept_snippets.json"
+        self.document_cache_path = self.snippet_collection_root / "document_cache.json"
         self.review_snippets: List[Dict[str, Any]] = []
         self.review_state: Dict[str, Any] = {}
         self.review_docs_by_source: Dict[str, List[Dict[str, Any]]] = {}
@@ -146,6 +146,10 @@ class PanzaNiceGUI:
         if not resolved.is_absolute():
             resolved = (self._repo_root() / resolved).resolve()
         return resolved
+
+    def _find_snippet_collection_root(self) -> Path:
+        username = self._find_user_name() or "default"
+        return self._repo_root() / "data" / username / "snippet_collection"
 
     def _find_user_name(self) -> Optional[str]:
         if self.username:
