@@ -4,7 +4,7 @@ defaults:
 _target_: panza.llm.TransformersLLM
 #name: ${interfaces.checkpoint}
 #checkpoint: ${interfaces.checkpoint}
-name:  "Qwen/Qwen3.5-4B"
+name: ${.checkpoint}
 checkpoint:  "Qwen/Qwen3.5-4B"
 device: ${oc.env:PANZA_DEVICE,cuda}  # supports: cuda, cpu, mps, mlx
 dtype: "bf16"
