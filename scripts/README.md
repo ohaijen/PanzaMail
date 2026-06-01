@@ -64,3 +64,18 @@ python3 -m mlx_lm generate \
   --adapter-path checkpoints/models/panza-david-qwen3-4b-4bit-lora \
   --prompt "Write a concise professional email for this subject: Meeting follow-up"
 ```
+
+Or run the same MLX adapter through Panza:
+
+```bash
+cd scripts
+./runner.sh \
+  user=david \
+  interfaces=json \
+  writer/llm@interfaces.writer.llm=mlx
+```
+
+The MLX runner uses `checkpoint=latest` by default. For a specific adapter, add
+`interfaces.writer.llm.checkpoint=../checkpoints/models/<adapter-dir>`. If the
+adapter config does not name its base model, add
+`interfaces.writer.llm.model=<base-model-or-mlx-repo>`.
