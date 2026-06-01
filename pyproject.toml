@@ -48,6 +48,10 @@ training_mps = [
     "datasets",
     "accelerate",
 ]
+inference_mlx = [
+    "mlx>=0.29.0; platform_system == 'Darwin'",
+    "mlx-lm>=0.30.0; platform_system == 'Darwin'",
+]
 training_mlx = [
     "mlx>=0.29.0; platform_system == 'Darwin'",
     "mlx-lm>=0.30.0; platform_system == 'Darwin'",

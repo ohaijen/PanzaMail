@@ -215,7 +215,8 @@ On a smaller GPU, it may be necessary to further train in lower precision (QRoSA
 <!-- **Step 5: Launch Panza!** -->
 
 - To run Panza after a full training run, run a command like `CUDA_VISIBLE_DEVICES=0 ./runner.sh user=USERNAME interfaces=cli writer/llm=transformers checkpoint=latest`.
-- To run Panza after a RoSA or LoRA training run, replace `writer/llm=transformers` with `writer/llm=peft`
+- To run Panza after a RoSA or Hugging Face LoRA training run, replace `writer/llm=transformers` with `writer/llm=peft`.
+- To run Panza after an MLX LoRA training run on Apple Silicon, install the MLX inference extras and use `./runner.sh user=USERNAME interfaces=json writer/llm@interfaces.writer.llm=mlx`. The MLX config uses `checkpoint=latest` by default and can be pointed at a specific adapter with `interfaces.writer.llm.checkpoint=PATH`.
 
 ### :new: Use Panza in Google Chrome directly with your Gmail!
 In addition to the Panza package itself, we have also created a tool that will allow you to use Panza directly within your Gmail session. We have published

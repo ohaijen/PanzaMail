@@ -1,0 +1,12 @@
+defaults:
+  - sampling: random
+
+_target_: panza.llm.MLXLLM
+name: ${.checkpoint}
+checkpoint: latest
+# Optional override for adapter checkpoints. If empty, MLXLLM reads the base
+# model from adapter_config.json when checkpoint points at an MLX adapter.
+model: ""
+adapter_path: ""
+device: mlx
+remove_prompt_from_stream: true
