@@ -13,12 +13,7 @@ from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
 from panza import PanzaWriter  # The import also loads custom Hydra resolvers
-from panza.entities import Document, Email, Snippet, SummarizationInstruction
-from panza.retriever import DocumentRetriever
-from panza.data_preparation.extract_emails import extract_emails
-from panza.data_preparation.extract_snippets import extract_snippets
-from panza.data_preparation.prepare_raft_emails import prepare_raft_emails
-from panza.data_preparation.rag import create_vector_store
+from panza.data_preparation.data_preparation import load_documents, generate_synthetic_instructions, check_if_file_exists, split_and_write_data
 
 LOGGER = logging.getLogger(__name__)
 
@@ -37,115 +32,6 @@ def rename_config_keys(cfg: DictConfig) -> None:
     OmegaConf.set_struct(cfg, True)
 
 
-def load_documents(data_path: str) -> None:
-    assert data_path.endswith(".jsonl"), f"Expecting a .jsonl file, but given = {data_path}"
-
-    LOGGER.info(f"--> Reading emails from: {data_path}")
-
-    with open(data_path, "r") as f:
-        lines = f.readlines()
-    documents = [Snippet.deserialize(line.strip(",")) for line in lines]
-    for document in documents:
-        document.original_text = document.snippet_text
-    print(f"--> # emails = {len(documents)}")
-
-    return documents
-
-
-def generate_synthetic_instructions(
-    documents: List[Document], writer: PanzaWriter, batch_size: int, output_path: str, update_documents: bool = False
-) -> list[Document]:
-    num_processed_documents = 0
-    num_batches = (len(documents) - 1) // batch_size + 1
-    start_time = time.time()
-    with open(output_path, "w") as f:
-        for i in tqdm(range(0, len(documents), batch_size)):
-            print(f"--> Processing batch {i // batch_size + 1}/{num_batches}")
-            batch = documents[i : i + batch_size]
-            instructions = [
-                SummarizationInstruction(instruction=document.snippet_text, context=document.source_path) for document in batch
-            ]
-
-    #         summaries = writer.run_batch(instructions)
-    #         num_processed_documents += len(summaries)
-
-            for it, summary in enumerate(summaries):
-                # Considerf adding cleaning and filtering here.
-                batch[it].summary = summary
-                if not summary.endswith("\n"):
-                    batch[it].summary += "\n"
-                if not batch[it].snippet_text.endswith("\n"):
-                    batch[it].snippet_text += "\n"
-
-            # Write the summarized documents to a file
-            for document in batch:
-                new_doc = copy.deepcopy(document)
-                new_doc.snippet_text = new_doc.original_text
-                f.write(json.dumps(new_doc.serialize()))
-                f.write("\n")
-
-    elapsed_time = time.time() - start_time
-    LOGGER.info(f"--> Processed {num_processed_documents} documents in {elapsed_time:.2f} seconds.")
-    if update_documents:
-        for document in documents:
-            document.snippet_text = document.summary
-    print("______________________________________________")
-    return documents
-
-
-def check_if_file_exists(cfg: DictConfig) -> None:
-    if os.path.exists(cfg.cleaned_emails_path) and not cfg.force_extract_clean_emails:
-        LOGGER.warning(
-            f"Cleaned email file already exists, using existing file {cfg.cleaned_emails_path}. "
-            "If you want to regenerate use the flag force_extract_clean_emails=true."
-        )
-        return True
-    return False
-
-
-def split_and_write_data(cfg):
-
-    data_dir, data_filename = os.path.split(cfg.summarized_emails_path)
-    all_data_files = [
-        entry.path
-        for entry in os.scandir(data_dir)
-        if entry.is_file() and entry.name.startswith(data_filename[:-6] + "_cycle") and entry.name.endswith("jsonl")
-    ]
-
-    all_train_data = []
-    for filename in all_data_files:
-        with open(os.path.join(data_dir, filename), "r") as f:
-            all_train_data += [l.strip() + "\n" for l in f.readlines()]
-    
-    with open(cfg.summarized_emails_path, 'w') as f:
-        f.writelines(all_train_data)
-
-
-
-    if cfg.test_split == 0:
-        shutil.copy(cfg.summarized_emails_path, os.path.join(cfg.user.data_dir, "train.jsonl"))
-        # Bad hack - we need test data for the training to work.
-        shutil.copy(cfg.summarized_emails_path, os.path.join(cfg.user.data_dir, "test.jsonl"))
-    else:
-        with open(cfg.summarized_emails_path, "r") as f:
-            data = f.readlines()
-        if cfg.split_type == "random":
-            random.seed(cfg.seed)
-            random.shuffle(data)
-        elif cfg.split_type == "chronological":
-            data = sorted(data, key=lambda x: datetime.fromisoformat(json.loads(x)["date"]))
-        else:
-            raise ValueError("Invalid split type.")
-
-        train_size = int(len(data) * (1 - cfg.test_split))
-
-        with open(os.path.join(cfg.user.data_dir, "train.jsonl"), "w") as f:
-            for i in range(train_size):
-                f.write(data[i])
-
-        with open(os.path.join(cfg.user.data_dir, "test.jsonl"), "w") as f:
-            for i in range(train_size, len(data)):
-                f.write(data[i])
 
 
 @hydra.main(version_base="1.1", config_path="../configs", config_name="panza_preparation")
@@ -154,7 +40,7 @@ def main(cfg: DictConfig) -> None:
     LOGGER.info("Configuration: \n%s", OmegaConf.to_yaml(cfg, resolve=True))
 
     # Rename config keys to follow class structure
-    rename_config_keys(cfg)
+    #rename_config_keys(cfg)
 
     # # Skip running if  already exist
     # if not check_if_file_exists(cfg):
@@ -203,7 +89,7 @@ def main(cfg: DictConfig) -> None:
             num_iterations = len(madlibs)
             for i, [name, madlib] in enumerate(madlibs):
                 print(default_prompt, madlib)
-                writer.prompting.summarization_prompt = default_prompt.format(**madlib)
+                writer.prompt_builder.summarization_prompt = default_prompt.format(**madlib)
 
                 if i < num_iterations - 1:
                     output_path = cfg.summarized_emails_path.replace(".jsonl", f"_{name}.jsonl")
