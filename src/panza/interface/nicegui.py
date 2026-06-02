@@ -88,6 +88,8 @@ class PanzaNiceGUI:
         self.review_source_label = None
         self.review_filter_source: Optional[str] = None
         self.review_decision_filter: Optional[str] = None
+        self.prepare_data_button = None
+        self.prepare_data_status_label = None
 
         self.file_selector_root = Path("/Users/jen/Downloads/")
         if not self.file_selector_root.exists():
@@ -764,8 +766,71 @@ class PanzaNiceGUI:
         self._load_file_tree()
         self._load_review_snippet()
 
+    def _set_prepare_data_status(self, status: str) -> None:
+        if self.prepare_data_status_label is not None:
+            self.prepare_data_status_label.text = status
+            self.prepare_data_status_label.update()
+
+    def _load_prepare_data_module(self):
+        import importlib
+        import sys
+
+        repo_root = str(self._repo_root())
+        if repo_root not in sys.path:
+            sys.path.insert(0, repo_root)
+        return importlib.import_module("scripts.prepare_data")
+
+    def _compose_prepare_data_config(self):
+        prepare_data = self._load_prepare_data_module()
+        overrides = [f"panza_workspace={self._repo_root()}"]
+        username = self._find_user_name()
+        if username:
+            overrides.append(f"user={username}")
+        overrides.extend(
+            [
+                f"email_dump_path={self.kept_json_path}",
+                f"cleaned_emails_path={self.kept_jsonl_path}",
+            ]
+        )
+        return prepare_data.compose_config(overrides)
+
+    def _run_prepare_data(self, cfg) -> None:
+        prepare_data = self._load_prepare_data_module()
+        prepare_data.main(cfg)
+
+    async def _prepare_training_data(self) -> None:
+        if self.prepare_data_button is not None:
+            self.prepare_data_button.enabled = False
+            self.prepare_data_button.update()
+
+        self._export_kept_snippets()
+        self._set_prepare_data_status("Preparing training data, this can take a while...")
+        await asyncio.sleep(0)
+
+        try:
+            cfg = self._compose_prepare_data_config()
+            await asyncio.to_thread(self._run_prepare_data, cfg)
+        except Exception as exc:
+            self._set_prepare_data_status(f"Could not prepare training data: {exc}")
+            return
+        finally:
+            if self.prepare_data_button is not None:
+                self.prepare_data_button.enabled = True
+                self.prepare_data_button.update()
+
+        self.training_data_path = self._find_training_data_file()
+        self._load_training_data()
+        self._set_prepare_data_status("Training data preparation complete.")
+
     def _build_review_tab(self) -> None:
         self._load_snippet_tool_state()
+        with ui.row().classes("w-full gap-4 items-center").style("margin-bottom: 16px;"):
+            self.prepare_data_button = ui.button(
+                "Prepare training data",
+                on_click=self._prepare_training_data,
+            ).props("color=primary")
+            self.prepare_data_status_label = ui.label("").classes("text-sm text-gray-600")
+
         ui.label("File selector").classes("text-sm text-gray-600")
         with ui.row().classes("w-full gap-4").style("margin-bottom: 16px; align-items: flex-start;"):
             with ui.column().classes("w-1/3").style("max-height: 420px; overflow:auto; border:1px solid #ddd; padding: 12px; background:#fafafa;"):

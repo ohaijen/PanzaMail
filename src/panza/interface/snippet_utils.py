@@ -967,14 +967,7 @@ def export_kept_snippets(
     kept_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
     with kept_jsonl_path.open("w", encoding="utf-8") as fh:
         for row in kept:
-            item = {
-                "id": row.get("id"),
-                "source_path": row.get("source_path"),
-                "snippet_text": row.get("snippet_text"),
-                "snippet_word_count": row.get("snippet_word_count"),
-                "paragraph_count": row.get("paragraph_count"),
-            }
-            fh.write(json.dumps(item, ensure_ascii=False) + "\n")
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
     kept_json_path.write_text(
         json.dumps(kept, ensure_ascii=False, indent=2),
         encoding="utf-8",
