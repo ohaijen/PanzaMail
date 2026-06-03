@@ -6,16 +6,21 @@ import os
 import random
 import shutil
 import time
-from typing import List
+from pathlib import Path
+from typing import List, Optional, Sequence
 
 import hydra
+from hydra.core.global_hydra import GlobalHydra
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
 from panza import PanzaWriter  # The import also loads custom Hydra resolvers
-from panza.data_preparation.data_preparation import load_documents, generate_synthetic_instructions, check_if_file_exists, split_and_write_data
 
 LOGGER = logging.getLogger(__name__)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CONFIG_DIR = REPO_ROOT / "configs"
+CONFIG_NAME = "panza_preparation"
 
 
 def rename_config_keys(cfg: DictConfig) -> None:
@@ -34,8 +39,46 @@ def rename_config_keys(cfg: DictConfig) -> None:
 
 
 
-@hydra.main(version_base="1.1", config_path="../configs", config_name="panza_preparation")
-def main(cfg: DictConfig) -> None:
+def compose_config(overrides: Optional[Sequence[str]] = None) -> DictConfig:
+    overrides = list(overrides or [])
+    if not any(override.lstrip("+").startswith("panza_workspace=") for override in overrides):
+        overrides.insert(0, f"panza_workspace={REPO_ROOT}")
+
+    if GlobalHydra.instance().is_initialized():
+        cfg = hydra.compose(
+            config_name=CONFIG_NAME,
+            overrides=overrides,
+            return_hydra_config=True,
+        )
+    else:
+        with hydra.initialize_config_dir(version_base="1.1", config_dir=str(CONFIG_DIR)):
+            cfg = hydra.compose(
+                config_name=CONFIG_NAME,
+                overrides=overrides,
+                return_hydra_config=True,
+            )
+
+    HydraConfig.instance().set_config(cfg)
+    OmegaConf.set_struct(cfg, False)
+    del cfg["hydra"]
+    OmegaConf.set_struct(cfg, True)
+    return cfg
+
+
+def main(cfg: Optional[DictConfig] = None, overrides: Optional[Sequence[str]] = None) -> None:
+    if cfg is None:
+        cfg = compose_config(overrides)
+
+    print("*"*20 + "\n CREATING TRAINING DATA WITH CONFIG:")
+    print(cfg)
+    print("*"*20)
+
+    from panza.data_preparation.data_preparation import (
+        generate_synthetic_instructions,
+        load_documents,
+        split_and_write_data,
+    )
+
     LOGGER.info("Running Panza Data Preparation")
     LOGGER.info("Configuration: \n%s", OmegaConf.to_yaml(cfg, resolve=True))
 
@@ -120,5 +163,10 @@ def main(cfg: DictConfig) -> None:
 
 
 
+@hydra.main(version_base="1.1", config_path="../configs", config_name=CONFIG_NAME)
+def hydra_main(cfg: DictConfig) -> None:
+    main(cfg)
+
+
 if __name__ == "__main__":
-    main()
+    hydra_main()
