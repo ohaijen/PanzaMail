@@ -10,11 +10,13 @@ _target_: panza.interface.PanzaNiceGUI
 
 assistant: 
   llm:
-    checkpoint:  "Qwen/Qwen3.5-4B"
+    #checkpoint:  "Qwen/Qwen3.5-4B"
+    checkpoint:  "Qwen/Qwen3-4B-Instruct-2507"
 
 writer: 
   llm:
-    checkpoint:  "Qwen/Qwen3.5-4B"
+    #checkpoint:  "Qwen/Qwen3.5-4B"
+    checkpoint:  "Qwen/Qwen3-4B-Instruct-2507"
 
 host: localhost
 port: 8080

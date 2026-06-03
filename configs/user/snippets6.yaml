@@ -1,5 +1,6 @@
-email_address: "david_anonymous@xyz.com"  # Change this to your email address!
+email_address: "snippets6@xyz.com"  # Change this to your email address!
 username: "snippets6"  # This identifies the user in the users directory and the names of the emails files.
+hardware: mlx # or CUDA
 
 data_dir: ${panza_workspace}/data/snippets6
 

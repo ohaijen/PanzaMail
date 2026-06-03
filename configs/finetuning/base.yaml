@@ -1,6 +1,7 @@
 wandb_disabled: true # We assume that wandb is disabled unless the user has logged on.
 
-max_seq_len: 2048
+#max_seq_len: 2048
+max_seq_len: 600
 global_seed: ${seed}
 
 load_path:  # set via bash script to be absolute path to your sparse checkpoint

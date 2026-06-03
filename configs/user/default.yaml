@@ -1,5 +1,6 @@
 email_address: "abc@xyz.com"  # Change this to your email address!
 username: "abc"  # This identifies the user in the users directory and the names of the emails files.
+hardware: "mlx"
 
 data_dir: ${panza_workspace}/data
 

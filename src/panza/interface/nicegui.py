@@ -38,6 +38,10 @@ DIRECTION_DESC = "Descending"
 DIRECTION_CHOICES = [DIRECTION_DESC, DIRECTION_ASC]
 EDITABLE_FIELD_KEY = "editable_text"
 DEFAULT_EVALUATION_FIELDS = ["prompt", "panza_response"]
+DEFAULT_TRAINING_LEARNING_RATE = "1e-5"
+DEFAULT_TRAINING_EPOCHS = 5
+DEFAULT_TRAINING_MODEL_NAME_OR_PATH = "Qwen/Qwen3-4B-Instruct-2507"
+DEFAULT_TRAINING_BATCH_SIZE = 8
 
 
 class PanzaNiceGUI:
@@ -115,6 +119,13 @@ class PanzaNiceGUI:
         self.training_data_records_container = None
         self.training_data_records: List[Dict[str, Any]] = []
         self.training_data_page_index = 0
+        self.train_model_button = None
+        self.train_model_status_label = None
+        self.train_model_name_input = None
+        self.train_learning_rate_input = None
+        self.train_epochs_input = None
+        self.train_batch_size_input = None
+        self.train_model_running = False
 
         self.eval_file_input = None
         self.eval_fields_input = None
@@ -393,6 +404,43 @@ class PanzaNiceGUI:
 
     def _build_training_data_tab(self) -> None:
         display_path = str(self.training_data_path or "")
+        (
+            default_model_name,
+            default_learning_rate,
+            default_epochs,
+            default_train_batch_size,
+        ) = self._default_training_hyperparameters()
+        with ui.row().classes("w-full gap-4 items-end flex-wrap").style(
+            "margin-bottom: 16px;"
+        ):
+            self.train_model_name_input = ui.input(
+                label="Model name or path",
+                value=default_model_name,
+            ).style("width: 420px; max-width: 100%;")
+            self.train_learning_rate_input = ui.input(
+                label="Learning rate",
+                value=default_learning_rate,
+            ).style("width: 180px;")
+            self.train_epochs_input = ui.number(
+                label="Epochs",
+                value=default_epochs,
+                min=1,
+                precision=0,
+                step=1,
+            ).style("width: 140px;")
+            self.train_batch_size_input = ui.number(
+                label="Train batch size",
+                value=default_train_batch_size,
+                min=1,
+                precision=0,
+                step=1,
+            ).style("width: 160px;")
+            self.train_model_button = ui.button(
+                "Train model",
+                on_click=self._train_model,
+            ).props("color=primary")
+            self.train_model_status_label = ui.label("").classes("text-sm text-gray-600")
+
         ui.label(f"File: {display_path or 'No training data file resolved.'}").classes(
             "text-sm text-gray-600"
         )
@@ -408,6 +456,215 @@ class PanzaNiceGUI:
         )
         self.training_data_records_container = ui.column().classes("w-full gap-4")
         self._load_training_data()
+
+    def _set_train_model_status(self, status: str) -> None:
+        if self.train_model_status_label is not None:
+            self.train_model_status_label.text = status
+            self.train_model_status_label.update()
+
+    def _load_train_lora_mlx_module(self):
+        import importlib
+
+        return importlib.import_module("panza.finetuning.train_lora_mlx")
+
+    def _load_train_lora_hf_module(self):
+        import importlib
+
+        return importlib.import_module("panza.finetuning.train_lora_hf")
+
+    def _base_training_overrides(self) -> List[str]:
+        overrides = [f"panza_workspace={self._repo_root()}"]
+        username = self._find_user_name()
+        if username:
+            overrides.append(f"user={username}")
+        return overrides
+
+    def _compose_train_lora_mlx_config(
+        self, extra_overrides: Optional[List[str]] = None
+    ):
+        train_lora_mlx = self._load_train_lora_mlx_module()
+        overrides = self._base_training_overrides()
+        if extra_overrides:
+            overrides.extend(extra_overrides)
+        return train_lora_mlx.compose_config(overrides)
+
+    def _parse_epoch_count(self, value: Any) -> int:
+        if isinstance(value, str):
+            value = value.strip()
+            if value.endswith("ep"):
+                value = value[:-2]
+        return self._parse_positive_int(value, "epochs")
+
+    def _format_training_number(self, value: float) -> str:
+        return f"{value:g}"
+
+    def _parse_positive_int(self, value: Any, label: str) -> int:
+        numeric_value = float(str(value).strip())
+        if not numeric_value.is_integer() or numeric_value <= 0:
+            raise ValueError(f"{label} must be a positive whole number")
+        return int(numeric_value)
+
+    def _default_training_hyperparameters(self) -> Tuple[str, str, int, int]:
+        try:
+            from omegaconf import OmegaConf
+
+            cfg = OmegaConf.load(self._repo_root() / "configs" / "finetuning" / "lora.yaml")
+            model_name = str(
+                cfg.get("model_name_or_path", DEFAULT_TRAINING_MODEL_NAME_OR_PATH)
+            ).strip()
+            learning_rate = self._format_training_number(
+                float(cfg.get("lr", DEFAULT_TRAINING_LEARNING_RATE))
+            )
+            epochs = self._parse_epoch_count(
+                cfg.get("max_duration", f"{DEFAULT_TRAINING_EPOCHS}ep")
+            )
+            train_batch_size = self._parse_positive_int(
+                cfg.get(
+                    "train_batch_size",
+                    cfg.get("batch_size", DEFAULT_TRAINING_BATCH_SIZE),
+                ),
+                "train batch size",
+            )
+            return (
+                model_name or DEFAULT_TRAINING_MODEL_NAME_OR_PATH,
+                learning_rate,
+                epochs,
+                train_batch_size,
+            )
+        except Exception:
+            return (
+                DEFAULT_TRAINING_MODEL_NAME_OR_PATH,
+                DEFAULT_TRAINING_LEARNING_RATE,
+                DEFAULT_TRAINING_EPOCHS,
+                DEFAULT_TRAINING_BATCH_SIZE,
+            )
+
+    def _training_hyperparameter_overrides(self) -> Tuple[List[str], str, str, str, int]:
+        raw_model_name = (
+            self.train_model_name_input.value
+            if self.train_model_name_input is not None
+            else DEFAULT_TRAINING_MODEL_NAME_OR_PATH
+        )
+        raw_learning_rate = (
+            self.train_learning_rate_input.value
+            if self.train_learning_rate_input is not None
+            else DEFAULT_TRAINING_LEARNING_RATE
+        )
+        raw_epochs = (
+            self.train_epochs_input.value
+            if self.train_epochs_input is not None
+            else DEFAULT_TRAINING_EPOCHS
+        )
+        raw_train_batch_size = (
+            self.train_batch_size_input.value
+            if self.train_batch_size_input is not None
+            else DEFAULT_TRAINING_BATCH_SIZE
+        )
+
+        model_name = str(raw_model_name or "").strip()
+        if not model_name:
+            raise ValueError("model name or path must not be empty")
+
+        try:
+            learning_rate_value = float(str(raw_learning_rate).strip())
+        except (TypeError, ValueError) as exc:
+            raise ValueError("learning rate must be a positive number") from exc
+        if learning_rate_value <= 0:
+            raise ValueError("learning rate must be greater than 0")
+
+        try:
+            epoch_value = self._parse_epoch_count(raw_epochs)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("epochs must be a positive whole number") from exc
+        try:
+            train_batch_size = self._parse_positive_int(
+                raw_train_batch_size,
+                "train batch size",
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("train batch size must be a positive whole number") from exc
+
+        learning_rate = self._format_training_number(learning_rate_value)
+        epochs = str(epoch_value)
+        return (
+            [
+                f"finetuning.model_name_or_path={model_name}",
+                f"finetuning.train_batch_size={train_batch_size}",
+                f"finetuning.batch_size={train_batch_size}",
+                f"finetuning.lr={learning_rate}",
+                f"finetuning.optimizer.lr={learning_rate}",
+                f"finetuning.lora.lr={learning_rate}",
+                f"finetuning.max_duration={epochs}ep",
+                "finetuning.mlx.iters=null",
+            ],
+            model_name,
+            learning_rate,
+            epochs,
+            train_batch_size,
+        )
+
+    def _run_train_lora_mlx(self, cfg) -> None:
+        print("Training MLX model")
+        train_lora_mlx = self._load_train_lora_mlx_module()
+        print(cfg)
+        train_lora_mlx.main(cfg)
+
+    def _run_train_lora_hf(self, cfg) -> None:
+        train_lora_hf = self._load_train_lora_hf_module()
+        train_lora_hf.main(cfg)
+
+    async def _train_model(self) -> None:
+        if self.train_model_running:
+            self._set_train_model_status("Training is already running.")
+            return
+
+        print("trying to train model")
+        self.train_model_running = True
+        if self.train_model_button is not None:
+            self.train_model_button.enabled = False
+            self.train_model_button.update()
+
+        self._set_train_model_status("Preparing training job...")
+        await asyncio.sleep(0)
+
+        try:
+            hyperparameter_overrides, model_name, learning_rate, epochs, train_batch_size = (
+                self._training_hyperparameter_overrides()
+            )
+            cfg = self._compose_train_lora_mlx_config(hyperparameter_overrides)
+            hardware = str(cfg.user.get("hardware", "")).lower().strip()
+            if hardware == "mlx":
+                self._set_train_model_status(
+                    f"Training MLX LoRA model ({model_name}, lr={learning_rate}, epochs={epochs}, batch={train_batch_size})..."
+                )
+                await asyncio.to_thread(self._run_train_lora_mlx, cfg)
+            elif hardware == "cuda":
+                self._set_train_model_status(
+                    f"Training CUDA LoRA model ({model_name}, lr={learning_rate}, epochs={epochs}, batch={train_batch_size})..."
+                )
+                await asyncio.to_thread(self._run_train_lora_hf, cfg)
+            else:
+                self._set_train_model_status(
+                    f"Training for hardware='{hardware or 'unset'}' is not implemented yet."
+                )
+                return
+        except ValueError as exc:
+            self._set_train_model_status(f"Invalid training settings: {exc}")
+            return
+        except Exception as exc:
+            self._set_train_model_status(f"Could not train model: {exc}")
+            return
+        finally:
+            self.train_model_running = False
+            if self.train_model_button is not None:
+                self.train_model_button.enabled = True
+                self.train_model_button.update()
+
+        self.available_models = self._find_available_models()
+        if self.model_selector is not None:
+            self.model_selector.options = [path.name for path in self.available_models]
+            self.model_selector.update()
+        self._set_train_model_status("Training complete.")
 
     def _open_review_tab(self) -> None:
         if self.tabs is None or self.review_tab is None:
@@ -589,11 +846,13 @@ class PanzaNiceGUI:
                 )
 
     def _load_file_tree(self) -> None:
-        if self.file_tree_container is None:
+        container = self.file_tree_container
+        if container is None:
             return
-        self.file_tree_container.clear()
+        container.clear()
         if not self.file_selector_root.exists():
-            ui.label(f"Directory not found: {self.file_selector_root}").classes("text-sm text-red-600")
+            with container:
+                ui.label(f"Directory not found: {self.file_selector_root}").classes("text-sm text-red-600")
             return
         try:
             cache = refresh_document_cache(
@@ -605,12 +864,14 @@ class PanzaNiceGUI:
             self.document_cache = cache
             file_tree = build_cached_snippet_file_tree(self.file_selector_root, cache)
         except Exception as exc:
-            ui.label(f"Could not load document browser: {exc}").classes("text-sm text-red-600")
+            with container:
+                ui.label(f"Could not load document browser: {exc}").classes("text-sm text-red-600")
             return
         if file_tree is None:
-            ui.label("No .txt files with usable snippets found.").classes("text-sm text-gray-600")
+            with container:
+                ui.label("No .txt files with usable snippets found.").classes("text-sm text-gray-600")
             return
-        self._render_file_tree_node(file_tree, self.file_tree_container)
+        self._render_file_tree_node(file_tree, container)
 
     def _export_kept_snippets(self) -> None:
         export_kept_snippets(
@@ -836,7 +1097,8 @@ class PanzaNiceGUI:
             with ui.column().classes("w-1/3").style("max-height: 420px; overflow:auto; border:1px solid #ddd; padding: 12px; background:#fafafa;"):
                 ui.label(f"Base directory: {self.file_selector_root}").classes("text-sm text-gray-600")
                 self.file_tree_container = ui.column().classes("w-full gap-2")
-                ui.label("Loading documents...").classes("text-sm text-gray-600")
+                with self.file_tree_container:
+                    ui.label("Loading documents...").classes("text-sm text-gray-600")
             with ui.column().classes("w-2/3").style("min-height: 420px;"):
                 ui.label("Selected file preview").classes("text-sm text-gray-600")
                 self.selected_file_path_label = ui.label("No file selected").classes("text-sm text-gray-600")
@@ -854,7 +1116,7 @@ class PanzaNiceGUI:
             ui.button("Kept", on_click=lambda: self._set_review_filter("keep")).props("flat color=positive")
             ui.button("Deleted", on_click=lambda: self._set_review_filter("delete")).props("flat color=negative")
             ui.button("Unrated", on_click=lambda: self._set_review_filter("pending")).props("flat color=secondary")
-        ui.timer(0.1, self._load_file_tree, once=True)
+        self._load_file_tree()
 
         ui.label("Review candidate snippets and keep the ones you want to add to training data. All candidates are shown below grouped by document path.").classes(
             "text-sm text-gray-600"

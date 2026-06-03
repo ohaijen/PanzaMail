@@ -2,14 +2,13 @@ defaults:
   - base
 
 max_duration: 5ep
-lr: 1e-5
-batch_size: 8
 train_batch_size: 8
-device_train_microbatch_size: 1
+device_train_microbatch_size: 1 # Must be one for MLX
 eval_interval: 8
 seed: ${seed}
 #model_name_or_path: "Qwen/Qwen3.5-4B"
-model_name_or_path: "Qwen/Qwen3-4B-Instruct-2507"
+#model_name_or_path: "Qwen/Qwen3-4B-Instruct-2507"
+model_name_or_path: "mlx-community/Qwen3-4B-Instruct-2507-4bit"
 save_merged_model: False
 
 lora:
@@ -32,19 +31,19 @@ scheduler:
 mlx:
   # If set, iters overrides epoch-based conversion from max_duration.
   iters:
-  validation_split: 0.1
+  validation_split: 0.
   optimizer: adam
   num_layers: 36
   steps_per_report: 10
-  steps_per_eval: 200
-  val_batches: -1
-  save_every: 100
-  grad_accumulation_steps: 1
+  steps_per_eval: 1
+  val_batches: 1
+  save_every: 10000
+  grad_accumulation_steps: 6
   grad_checkpoint: false
   # Keep disabled for prompt/completion datasets unless chat-format data is used.
-  mask_prompt: false
+  mask_prompt: true
   test_after_train: false
-  test_batches: 100
+  test_batches: 1
   dry_run: false
 
 num_cpu_threads: 1

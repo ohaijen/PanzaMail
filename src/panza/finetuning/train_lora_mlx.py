@@ -8,13 +8,19 @@ import subprocess
 import sys
 import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import hydra
+from hydra.core.global_hydra import GlobalHydra
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 import torch
 #from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+CONFIG_DIR = REPO_ROOT / "configs"
+CONFIG_NAME = "panza_finetuning"
 
 
 def load_preamble(path: str) -> str:
@@ -35,8 +41,38 @@ def load_user_preamble(path: str) -> str:
         return preamble
 
 
-OmegaConf.register_new_resolver("load_preamble", load_preamble)
-OmegaConf.register_new_resolver("load_user_preamble", load_user_preamble)
+if not OmegaConf.has_resolver("load_preamble"):
+    OmegaConf.register_new_resolver("load_preamble", load_preamble)
+if not OmegaConf.has_resolver("load_user_preamble"):
+    OmegaConf.register_new_resolver("load_user_preamble", load_user_preamble)
+
+
+def compose_config(overrides: Optional[Sequence[str]] = None) -> DictConfig:
+    overrides = list(overrides or [])
+    if not any(override.lstrip("+").startswith("panza_workspace=") for override in overrides):
+        overrides.insert(0, f"panza_workspace={REPO_ROOT}")
+    if not any(override.lstrip("+").startswith("finetuning=") for override in overrides):
+        overrides.insert(0, "finetuning=lora")
+
+    if GlobalHydra.instance().is_initialized():
+        cfg = hydra.compose(
+            config_name=CONFIG_NAME,
+            overrides=overrides,
+            return_hydra_config=True,
+        )
+    else:
+        with hydra.initialize_config_dir(version_base="1.1", config_dir=str(CONFIG_DIR)):
+            cfg = hydra.compose(
+                config_name=CONFIG_NAME,
+                overrides=overrides,
+                return_hydra_config=True,
+            )
+
+    HydraConfig.instance().set_config(cfg)
+    OmegaConf.set_struct(cfg, False)
+    del cfg["hydra"]
+    OmegaConf.set_struct(cfg, True)
+    return cfg
 
 
 def create_lora_mlx_run_name(cfg: DictConfig) -> str:
@@ -44,7 +80,7 @@ def create_lora_mlx_run_name(cfg: DictConfig) -> str:
     model_name = cfg.finetuning.model_name_or_path.split("/")[-1]
     run_name += f"-{model_name}"
     run_name += f"-{cfg.model_precision}"
-    run_name += f"-bs{cfg.finetuning.batch_size}"
+    run_name += f"-bs{get_train_batch_size(cfg.finetuning)}"
     run_name += "-lora-mlx"
     run_name += f"-lr{cfg.finetuning.lr}"
     run_name += f"-{cfg.finetuning.max_duration}"
@@ -63,6 +99,31 @@ def parse_num_epochs(max_duration: Any) -> float:
     )
 
 
+def get_train_batch_size(finetuning_cfg: DictConfig) -> int:
+    train_batch_size = int(
+        finetuning_cfg.get(
+            "train_batch_size",
+            finetuning_cfg.get("batch_size", 1),
+        )
+    )
+    if train_batch_size <= 0:
+        raise ValueError("finetuning.train_batch_size must be >= 1 for MLX training.")
+    return train_batch_size
+
+
+def calculate_grad_accumulation_steps(
+    train_batch_size: int,
+    microbatch_size: int,
+) -> int:
+    if microbatch_size <= 0:
+        raise ValueError(
+            "finetuning.device_train_microbatch_size must be >= 1 for MLX training."
+        )
+    if train_batch_size <= 0:
+        raise ValueError("finetuning.train_batch_size must be >= 1 for MLX training.")
+    return max(1, int(math.ceil(train_batch_size / microbatch_size)))
+
+
 def get_prompt_completion(example: Dict[str, Any]) -> Tuple[str, str]:
     if "prompt" in example and "completion" in example:
         return str(example["prompt"]), str(example["completion"])
@@ -74,9 +135,13 @@ def get_prompt_completion(example: Dict[str, Any]) -> Tuple[str, str]:
         if prompt.startswith("Instruction: "):
             prompt = prompt[len("Instruction: ") :]
         return prompt, str(example["email"])
+    if "summary" in example and "snippet_text" in example:
+        prompt = str(example["summary"])
+        return prompt, str(example["snippet_text"])
     raise ValueError(
         "Unsupported training sample format. Expected one of: "
         "{prompt,completion}, {prompt,response}, or {summary,email}."
+        f" Got {[k for k in example.keys()]}"
     )
 
 
@@ -99,30 +164,30 @@ def convert_records(records: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     return converted
 
 
-def split_train_valid(
-    samples: List[Dict[str, str]],
-    validation_split: float,
-    seed: int,
-) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
-    if validation_split <= 0 or len(samples) < 2:
-        return samples, []
+# def split_train_valid(
+#     samples: List[Dict[str, str]],
+#     validation_split: float,
+#     seed: int,
+# ) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+#     if validation_split <= 0 or len(samples) < 2:
+#         return samples, []
 
-    num_valid = max(1, int(len(samples) * validation_split))
-    num_valid = min(num_valid, len(samples) - 1)
+#     num_valid = max(1, int(len(samples) * validation_split))
+#     num_valid = min(num_valid, len(samples) - 1)
 
-    indices = list(range(len(samples)))
-    rng = random.Random(seed)
-    rng.shuffle(indices)
+#     indices = list(range(len(samples)))
+#     rng = random.Random(seed)
+#     rng.shuffle(indices)
 
-    valid_indices = set(indices[:num_valid])
-    train_split: List[Dict[str, str]] = []
-    valid_split: List[Dict[str, str]] = []
-    for idx, sample in enumerate(samples):
-        if idx in valid_indices:
-            valid_split.append(sample)
-        else:
-            train_split.append(sample)
-    return train_split, valid_split
+#     valid_indices = set(indices[:num_valid])
+#     train_split: List[Dict[str, str]] = []
+#     valid_split: List[Dict[str, str]] = []
+#     for idx, sample in enumerate(samples):
+#         if idx in valid_indices:
+#             valid_split.append(sample)
+#         else:
+#             train_split.append(sample)
+#     return train_split, valid_split
 
 
 def write_jsonl(path: Path, records: List[Dict[str, str]]) -> None:
@@ -132,8 +197,10 @@ def write_jsonl(path: Path, records: List[Dict[str, str]]) -> None:
             file.write(json.dumps(record, ensure_ascii=True) + "\n")
 
 
-@hydra.main(version_base="1.1", config_path="../../../configs", config_name="panza_finetuning")
-def main(cfg: DictConfig) -> None:
+def main(cfg: Optional[DictConfig] = None, overrides: Optional[Sequence[str]] = None) -> None:
+    if cfg is None:
+        cfg = compose_config(overrides)
+
     OmegaConf.set_struct(cfg, False)
     if "lora" not in cfg.finetuning:
         raise ValueError("This trainer only supports finetuning=lora.")
@@ -146,7 +213,7 @@ def main(cfg: DictConfig) -> None:
 
     data_dir = Path(cfg.user.data_dir)
     train_file = data_dir / "train.jsonl"
-    valid_file = data_dir / "valid.jsonl"
+    #valid_file = data_dir / "valid.jsonl"
     test_file = data_dir / "test.jsonl"
 
     if not train_file.exists():
@@ -156,22 +223,31 @@ def main(cfg: DictConfig) -> None:
     if not train_samples:
         raise ValueError(f"No usable records found in {train_file}")
 
-    if valid_file.exists():
-        valid_samples = convert_records(load_jsonl_records(valid_file))
-    else:
-        train_samples, valid_samples = split_train_valid(
-            samples=train_samples,
-            validation_split=float(cfg.finetuning.mlx.validation_split),
-            seed=int(cfg.finetuning.seed),
-        )
+    # if valid_file.exists():
+    #     valid_samples = convert_records(load_jsonl_records(valid_file))
+    # else:
+    #     valid_samples = None
+        # train_samples, valid_samples = split_train_valid(
+        #     samples=train_samples,
+        #     validation_split=float(cfg.finetuning.mlx.validation_split),
+        #     seed=int(cfg.finetuning.seed),
+        # )
 
     test_samples: List[Dict[str, str]] = []
     if test_file.exists():
         test_samples = convert_records(load_jsonl_records(test_file))
 
-    batch_size = int(cfg.finetuning.get("device_train_microbatch_size", cfg.finetuning.batch_size))
+    train_batch_size = get_train_batch_size(cfg.finetuning)
+    batch_size = int(
+        cfg.finetuning.get(
+            "device_train_microbatch_size",
+            cfg.finetuning.get("batch_size", train_batch_size),
+        )
+    )
     if batch_size <= 0:
-        raise ValueError("finetuning.device_train_microbatch_size must be >= 1 for MLX training.")
+        raise ValueError(
+            "finetuning.device_train_microbatch_size must be >= 1 for MLX training."
+        )
     if len(train_samples) < batch_size:
         warnings.warn(
             "MLX requires dataset size >= batch size. "
@@ -179,18 +255,33 @@ def main(cfg: DictConfig) -> None:
         )
         batch_size = len(train_samples)
 
+    grad_accumulation_steps = calculate_grad_accumulation_steps(
+        train_batch_size=train_batch_size,
+        microbatch_size=batch_size,
+    )
+    effective_train_batch_size = batch_size * grad_accumulation_steps
+    if effective_train_batch_size != train_batch_size:
+        warnings.warn(
+            "finetuning.train_batch_size is not divisible by the MLX microbatch size. "
+            f"Using effective train batch size {effective_train_batch_size} "
+            f"(microbatch={batch_size}, grad_accumulation_steps={grad_accumulation_steps})."
+        )
+
     mlx_cfg = cfg.finetuning.mlx
     if mlx_cfg.get("iters", None):
         iters = int(mlx_cfg.iters)
     else:
         num_epochs = parse_num_epochs(cfg.finetuning.max_duration)
-        steps_per_epoch = max(1, math.ceil(len(train_samples) / batch_size))
+        steps_per_epoch = max(
+            1,
+            math.ceil(len(train_samples) / effective_train_batch_size),
+        )
         iters = max(1, int(math.ceil(num_epochs * steps_per_epoch)))
 
     mlx_data_dir = Path(cfg.checkpoint_dir) / "mlx_data" / cfg.finetuning.run_name
     write_jsonl(mlx_data_dir / "train.jsonl", train_samples)
-    if valid_samples:
-        write_jsonl(mlx_data_dir / "valid.jsonl", valid_samples)
+    # if valid_samples:
+    #     write_jsonl(mlx_data_dir / "valid.jsonl", valid_samples)
     if test_samples:
         write_jsonl(mlx_data_dir / "test.jsonl", test_samples)
 
@@ -258,7 +349,7 @@ def main(cfg: DictConfig) -> None:
         "--steps-per-eval",
         str(int(mlx_cfg.steps_per_eval)),
         "--grad-accumulation-steps",
-        str(int(mlx_cfg.grad_accumulation_steps)),
+        str(grad_accumulation_steps),
         "--adapter-path",
         str(adapter_path),
         "--save-every",
@@ -279,7 +370,9 @@ def main(cfg: DictConfig) -> None:
 
     print(
         "Prepared MLX dataset: "
-        f"train={len(train_samples)}, valid={len(valid_samples)}, test={len(test_samples)}"
+        f"train={len(train_samples)}, test={len(test_samples)}, "
+        f"microbatch={batch_size}, train_batch_size={train_batch_size}, "
+        f"grad_accumulation_steps={grad_accumulation_steps}"
     )
     print(f"Launching: {shlex.join(cmd)}")
 
@@ -307,5 +400,10 @@ def main(cfg: DictConfig) -> None:
         subprocess.run(fuse_cmd, check=True)
 
 
+@hydra.main(version_base="1.1", config_path="../../../configs", config_name=CONFIG_NAME)
+def hydra_main(cfg: DictConfig) -> None:
+    main(cfg)
+
+
 if __name__ == "__main__":
-    main()
+    hydra_main()
