@@ -240,9 +240,7 @@ def main(cfg: Optional[DictConfig] = None, overrides: Optional[Sequence[str]] = 
     train_batch_size = get_train_batch_size(cfg.finetuning)
     batch_size = int(
         cfg.finetuning.get(
-            "device_train_microbatch_size",
-            cfg.finetuning.get("batch_size", train_batch_size),
-        )
+            "device_train_microbatch_size", train_batch_size)
     )
     if batch_size <= 0:
         raise ValueError(
@@ -274,7 +272,7 @@ def main(cfg: Optional[DictConfig] = None, overrides: Optional[Sequence[str]] = 
         num_epochs = parse_num_epochs(cfg.finetuning.max_duration)
         steps_per_epoch = max(
             1,
-            math.ceil(len(train_samples) / effective_train_batch_size),
+            math.ceil(len(train_samples) / batch_size),
         )
         iters = max(1, int(math.ceil(num_epochs * steps_per_epoch)))
 
