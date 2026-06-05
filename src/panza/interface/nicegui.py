@@ -382,18 +382,18 @@ class PanzaNiceGUI:
 
         with ui.tabs().classes("w-full") as tabs:
             self.tabs = tabs
-            inference_tab = ui.tab("Inference")
-            training_data_tab = ui.tab("Training data")
             self.review_tab = ui.tab("Add training data")
+            training_data_tab = ui.tab("Training data")
+            inference_tab = ui.tab("Inference")
             automated_evaluation_tab = ui.tab("Automated evaluation")
 
-        with ui.tab_panels(tabs, value=inference_tab).classes("w-full"):
-            with ui.tab_panel(inference_tab):
-                self._build_inference_tab()
-            with ui.tab_panel(training_data_tab):
-                self._build_training_data_tab()
+        with ui.tab_panels(tabs, value=self.review_tab).classes("w-full"):
             with ui.tab_panel(self.review_tab):
                 self._build_review_tab()
+            with ui.tab_panel(training_data_tab):
+                self._build_training_data_tab()
+            with ui.tab_panel(inference_tab):
+                self._build_inference_tab()
             with ui.tab_panel(automated_evaluation_tab):
                 self._build_automated_evaluation_tab()
 
