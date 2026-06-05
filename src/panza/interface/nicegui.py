@@ -97,10 +97,9 @@ class PanzaNiceGUI:
         self.prepare_data_button = None
         self.prepare_data_status_label = None
         self.personal_data_dir = personal_data_dir or "/Users/{username}/Documents"
-
-        self.file_selector_root = Path(self.personal_data_dir)
-        if not self.file_selector_root.exists():
-            self.file_selector_root = self._repo_root()
+        self.file_selector_root = self._resolve_personal_data_dir(
+            self.personal_data_dir
+        )
         self.file_tree_container = None
         self.selected_file_path_label = None
         self.selected_file_viewer = None
@@ -162,6 +161,11 @@ class PanzaNiceGUI:
         if not resolved.is_absolute():
             resolved = (self._repo_root() / resolved).resolve()
         return resolved
+
+    def _resolve_personal_data_dir(self, personal_data_dir: str | Path) -> Path:
+        username = self._find_user_name() or "default"
+        resolved = str(personal_data_dir).replace("{username}", username)
+        return self._resolve_path(os.path.expandvars(resolved))
 
     def _find_snippet_collection_root(self) -> Path:
         username = self._find_user_name() or "default"
@@ -433,6 +437,12 @@ class PanzaNiceGUI:
     def _build_inference_tab(self) -> None:
         self._build_model_selector_widget()
 
+        with ui.row().classes("w-full items-center gap-4").style(
+            "margin-bottom: 16px;"
+        ):
+            ui.button("Run prompt", on_click=self.execute_prompt)
+            self.status_label = ui.label("")
+
         self.prompt_input = ui.input(
             label="Prompt",
             placeholder="Enter a prompt here...",
@@ -458,11 +468,6 @@ class PanzaNiceGUI:
             .props("readonly")
             .style("width: 100%; min-height: 240px; margin-bottom: 16px;")
         )
-
-        ui.button("Run prompt", on_click=self.execute_prompt).style(
-            "margin-bottom: 16px;"
-        )
-        self.status_label = ui.label("")
 
     def _build_training_data_tab(self) -> None:
         display_path = str(self.training_data_path or "")
@@ -715,7 +720,6 @@ class PanzaNiceGUI:
             [
                 f"finetuning.model_name_or_path={model_name}",
                 f"finetuning.train_batch_size={train_batch_size}",
-                f"finetuning.batch_size={train_batch_size}",
                 f"finetuning.lr={learning_rate}",
                 f"finetuning.optimizer.lr={learning_rate}",
                 f"finetuning.lora.lr={learning_rate}",
