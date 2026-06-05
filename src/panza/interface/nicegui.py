@@ -113,9 +113,8 @@ class PanzaNiceGUI:
         self.output_area = None
         self.generic_output_area = None
         self.status_label = None
-        self.model_selector = None
-        self.model_name_label = None
-        self.model_loading_status_label = None
+        self.model_selector_widgets: List[Dict[str, Any]] = []
+        self.syncing_model_selectors = False
 
         self.training_data_status_label = None
         self.training_data_page_status_label = None
@@ -297,12 +296,10 @@ class PanzaNiceGUI:
             )
 
         self.selected_model_path = model_path
-        if self.model_name_label is not None:
-            self.model_name_label.text = model_path.name
-            self.model_name_label.update()
-        if self.model_loading_status_label is not None:
-            self.model_loading_status_label.text = f"Loaded model: {model_path.name}"
-            self.model_loading_status_label.update()
+        self._sync_model_selector_widgets(
+            value=model_path.name,
+            status=f"Loaded model: {model_path.name}",
+        )
 
         new_eval_file = self._find_evaluation_file_for_model(model_path)
         if new_eval_file is not None:
@@ -312,10 +309,59 @@ class PanzaNiceGUI:
                 self.eval_file_input.update()
                 self._load_evaluation_file()
 
-    def _on_model_selected(self) -> None:
-        if self.model_selector is None or not self.model_selector.value:
+    def _available_model_names(self) -> List[str]:
+        selected_name = (
+            self.selected_model_path.name if self.selected_model_path else None
+        )
+        available_names = [path.name for path in self.available_models]
+        if selected_name and selected_name not in available_names:
+            available_names.insert(0, selected_name)
+        return available_names
+
+    def _sync_model_selector_widgets(
+        self,
+        value: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> None:
+        self.syncing_model_selectors = True
+        try:
+            for widget in self.model_selector_widgets:
+                if value is not None:
+                    selector = widget.get("selector")
+                    if selector is not None:
+                        selector.value = value
+                        selector.update()
+                    name_label = widget.get("name_label")
+                    if name_label is not None:
+                        name_label.text = f"Current model: {value}"
+                        name_label.update()
+                if status is not None:
+                    status_label = widget.get("status_label")
+                    if status_label is not None:
+                        status_label.text = status
+                        status_label.update()
+        finally:
+            self.syncing_model_selectors = False
+
+    def _refresh_model_selector_options(self) -> None:
+        available_names = self._available_model_names()
+        selected_name = (
+            self.selected_model_path.name if self.selected_model_path else None
+        )
+        for widget in self.model_selector_widgets:
+            selector = widget.get("selector")
+            if selector is None:
+                continue
+            selector.options = available_names
+            if selected_name:
+                selector.value = selected_name
+            selector.update()
+
+    def _on_model_selected(self, selected_name: Optional[str] = None) -> None:
+        if self.syncing_model_selectors:
             return
-        selected_name = self.model_selector.value
+        if not selected_name:
+            return
         selected_path = next(
             (path for path in self.available_models if path.name == selected_name),
             None,
@@ -325,9 +371,7 @@ class PanzaNiceGUI:
         try:
             self._reload_model(selected_path)
         except Exception as exc:
-            if self.model_loading_status_label is not None:
-                self.model_loading_status_label.text = f"Could not load model: {exc}"
-                self.model_loading_status_label.update()
+            self._sync_model_selector_widgets(status=f"Could not load model: {exc}")
 
     def _build_interface(self) -> None:
         #ui.title("Panza")
@@ -338,15 +382,12 @@ class PanzaNiceGUI:
 
         with ui.tabs().classes("w-full") as tabs:
             self.tabs = tabs
-            model_selector_tab = ui.tab("Model selector")
             inference_tab = ui.tab("Inference")
             training_data_tab = ui.tab("Training data")
             self.review_tab = ui.tab("Add training data")
             automated_evaluation_tab = ui.tab("Automated evaluation")
 
-        with ui.tab_panels(tabs, value=model_selector_tab).classes("w-full"):
-            with ui.tab_panel(model_selector_tab):
-                self._build_model_selector_tab()
+        with ui.tab_panels(tabs, value=inference_tab).classes("w-full"):
             with ui.tab_panel(inference_tab):
                 self._build_inference_tab()
             with ui.tab_panel(training_data_tab):
@@ -356,28 +397,29 @@ class PanzaNiceGUI:
             with ui.tab_panel(automated_evaluation_tab):
                 self._build_automated_evaluation_tab()
 
-    def _build_model_selector_tab(self) -> None:
+    def _build_model_selector_widget(self) -> Dict[str, Any]:
         selected_name = (
             self.selected_model_path.name if self.selected_model_path else None
         )
-        available_names = [path.name for path in self.available_models]
-        if selected_name and selected_name not in available_names:
-            available_names.insert(0, selected_name)
+        available_names = self._available_model_names()
+        selector_widget: Dict[str, Any] = {}
 
-        ui.label("Select which model should be used for inference and automated evaluation.").classes(
-            "text-sm text-gray-600"
-        )
-        self.model_name_label = ui.label(
+        selector_widget["name_label"] = ui.label(
             f"Current model: {selected_name or 'None'}"
         )
-        self.model_loading_status_label = ui.label(
+        selector_widget["status_label"] = ui.label(
             "" if self.selected_model_path else "No model selected."
         )
-        self.model_selector = ui.select(
+
+        def on_change() -> None:
+            selector = selector_widget.get("selector")
+            self._on_model_selected(selector.value if selector is not None else None)
+
+        selector_widget["selector"] = ui.select(
             available_names,
             label="Available models",
             value=selected_name or (available_names[0] if available_names else ""),
-            on_change=self._on_model_selected,
+            on_change=on_change,
         ).classes("w-full")
 
         if not available_names:
@@ -385,9 +427,12 @@ class PanzaNiceGUI:
                 "**No models were found in `checkpoints/models`." \
                 " Ensure your model directories are present and your username matches the model name.**"
             )
-        self._build_training_widget()
+        self.model_selector_widgets.append(selector_widget)
+        return selector_widget
 
     def _build_inference_tab(self) -> None:
+        self._build_model_selector_widget()
+
         self.prompt_input = ui.input(
             label="Prompt",
             placeholder="Enter a prompt here...",
@@ -742,9 +787,7 @@ class PanzaNiceGUI:
             self._set_train_model_buttons_enabled(True)
 
         self.available_models = self._find_available_models()
-        if self.model_selector is not None:
-            self.model_selector.options = [path.name for path in self.available_models]
-            self.model_selector.update()
+        self._refresh_model_selector_options()
         self._set_train_model_status("Training complete.")
 
     def _open_review_tab(self) -> None:
@@ -1220,6 +1263,8 @@ class PanzaNiceGUI:
             ui.button("Export kept snippets", on_click=self._export_kept_snippets).props("color=secondary")
 
     def _build_automated_evaluation_tab(self) -> None:
+        self._build_model_selector_widget()
+
         default_path = str(self.default_evaluation_path or "")
         self.eval_file_input = ui.input(
             label="Evaluation file",
