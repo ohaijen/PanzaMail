@@ -22,10 +22,16 @@ Then, Install the required packages:
 pip install ".[training]"
 ```
 
+Now, create your user by copying config/users/default.yaml into config/users/{you}.yaml, or go ahead and modify the default user to be you. It's easiest if your username matches your mac username, but not by much. Please pay particular attention to your personal data directory, since that's the one that will be browsed for your personal data.
+
 Then, go ahead and load the UI:
 ```
 PANZA_DEVICE=mlx HYDRA_FULL_ERROR=1 python runner.py user=[USER] interfaces=nicegui  interfaces.port=[PICK A PORT]
 ```
+
+In the first tab, you create training data. Once you have some, you can click the "prepare training data" button, which will use reverse instructions to create actual training data. You can review this data in the "Training Data" tab, then train a model. Finally, you can play with your model in the "Inference" tab,
+
+It is highly recommended to use the 4-bit 4B model for all the steps, or your mac may crash!
 
 #  Panza: A personal assistant, trained and running on-device
 
