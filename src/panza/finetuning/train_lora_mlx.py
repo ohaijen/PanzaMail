@@ -16,7 +16,10 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 import torch
 #from peft import LoraConfig, get_peft_model
-from transformers import AutoModelForCausalLM
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+
+from panza.entities import SnippetInstruction
+from panza.retriever import NoneRetriever
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CONFIG_DIR = REPO_ROOT / "configs"
@@ -82,7 +85,7 @@ def create_lora_mlx_run_name(cfg: DictConfig) -> str:
     run_name += f"-{cfg.model_precision}"
     run_name += f"-bs{get_train_batch_size(cfg.finetuning)}"
     run_name += "-lora-mlx"
-    run_name += f"-lr{cfg.finetuning.lr}"
+    run_name += f"-lr{cfg.finetuning.lora.lr}"
     run_name += f"-{cfg.finetuning.max_duration}"
     run_name += f"-seed{cfg.finetuning.seed}"
     return run_name
@@ -124,25 +127,102 @@ def calculate_grad_accumulation_steps(
     return max(1, int(math.ceil(train_batch_size / microbatch_size)))
 
 
-def get_prompt_completion(example: Dict[str, Any]) -> Tuple[str, str]:
-    if "prompt" in example and "completion" in example:
-        return str(example["prompt"]), str(example["completion"])
-    if "prompt" in example and "response" in example:
-        return str(example["prompt"]), str(example["response"])
-    if "summary" in example and "email" in example:
-        prompt_raw = str(example["summary"])
-        prompt = prompt_raw.split("\n\nInstruction: ")[-1]
-        if prompt.startswith("Instruction: "):
-            prompt = prompt[len("Instruction: ") :]
-        return prompt, str(example["email"])
-    if "summary" in example and "snippet_text" in example:
-        prompt = str(example["summary"])
-        return prompt, str(example["snippet_text"])
+def instantiate_preprocessing_prompt_builder(cfg: DictConfig):
+    prompting_cfg = cfg.preprocessing.prompting
+    target = str(prompting_cfg.get("_target_", ""))
+
+    OmegaConf.set_struct(prompting_cfg, False)
+    if (
+        target.endswith("SnippetPromptBuilder")
+        and "pre_personalization_system_preamble" not in prompting_cfg
+    ):
+        prompting_cfg.pre_personalization_system_preamble = ""
+    OmegaConf.set_struct(prompting_cfg, True)
+
+    number_rag_emails = int(prompting_cfg.get("number_rag_emails", 0) or 0)
+    if number_rag_emails <= 0:
+        return hydra.utils.instantiate(prompting_cfg, retriever=NoneRetriever())
+    return hydra.utils.instantiate(prompting_cfg)
+
+
+def load_preprocessing_tokenizer(model_name_or_path: str, max_seq_len: int):
+    config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True)
+    if "text_config" in config:
+        config = config.text_config
+    model_max_length = int(
+        getattr(config, "max_position_embeddings", None) or max_seq_len
+    )
+    return AutoTokenizer.from_pretrained(
+        model_name_or_path,
+        model_max_length=model_max_length,
+        trust_remote_code=True,
+    )
+
+
+def build_preprocessing_components(cfg: DictConfig) -> Tuple[Any, Any]:
+    prompt_builder = instantiate_preprocessing_prompt_builder(cfg)
+    tokenizer = load_preprocessing_tokenizer(
+        str(cfg.finetuning.model_name_or_path),
+        int(cfg.finetuning.max_seq_len),
+    )
+    return prompt_builder, tokenizer
+
+
+def extract_instruction_text(example: Dict[str, Any]) -> str:
+    prompt_raw = str(example["summary"]).split("\n\nInstruction: ")[-1]
+    return prompt_raw.split("Here is the rewritten snippet:\n\n\\: ")[-1]
+
+
+def extract_response_text(example: Dict[str, Any]) -> str:
+    for field in ("snippet_text", "email", "completion", "response"):
+        if field in example:
+            return str(example[field])
     raise ValueError(
-        "Unsupported training sample format. Expected one of: "
-        "{prompt,completion}, {prompt,response}, or {summary,email}."
+        "Unsupported training sample format. Expected one of: snippet_text, "
+        "email, completion, or response."
         f" Got {[k for k in example.keys()]}"
     )
+
+
+def build_prompt_completion(
+    example: Dict[str, Any],
+    prompt_builder: Any,
+    tokenizer: Any,
+) -> Tuple[str, str]:
+    if "summary" not in example:
+        if "prompt" in example and "completion" in example:
+            return str(example["prompt"]), str(example["completion"])
+        if "prompt" in example and "response" in example:
+            return str(example["prompt"]), str(example["response"])
+        raise ValueError(
+            "Unsupported training sample format. Expected a summary field, "
+            "or prebuilt {prompt, completion}/{prompt, response} fields."
+            f" Got {[k for k in example.keys()]}"
+        )
+
+    try:
+        instruction = SnippetInstruction(
+            instruction=extract_instruction_text(example),
+            context=None,
+        )
+        prompt = prompt_builder.build_prompt(instruction)
+        response_text = extract_response_text(example)
+
+        conversation = [
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": response_text},
+        ]
+        chat_prompt = tokenizer.apply_chat_template(conversation, tokenize=False)
+        response_begin_index = chat_prompt.index(response_text.strip())
+        return (
+            chat_prompt[:response_begin_index],
+            chat_prompt[response_begin_index:],
+        )
+    except Exception as exc:
+        raise ValueError(
+            "Unable to extract prompt/response using configured preprocessing "
+            f"for record keys {[k for k in example.keys()]}: {exc}"
+        ) from exc
 
 
 def load_jsonl_records(path: Path) -> List[Dict[str, Any]]:
@@ -156,10 +236,18 @@ def load_jsonl_records(path: Path) -> List[Dict[str, Any]]:
     return records
 
 
-def convert_records(records: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+def convert_records(
+    records: List[Dict[str, Any]],
+    prompt_builder: Any,
+    tokenizer: Any,
+) -> List[Dict[str, str]]:
     converted: List[Dict[str, str]] = []
     for record in records:
-        prompt, completion = get_prompt_completion(record)
+        prompt, completion = build_prompt_completion(
+            record,
+            prompt_builder,
+            tokenizer,
+        )
         converted.append({"prompt": prompt, "completion": completion})
     return converted
 
@@ -219,7 +307,13 @@ def main(cfg: Optional[DictConfig] = None, overrides: Optional[Sequence[str]] = 
     if not train_file.exists():
         raise FileNotFoundError(f"Training data not found at {train_file}")
 
-    train_samples = convert_records(load_jsonl_records(train_file))
+    prompt_builder, tokenizer = build_preprocessing_components(cfg)
+
+    train_samples = convert_records(
+        load_jsonl_records(train_file),
+        prompt_builder,
+        tokenizer,
+    )
     if not train_samples:
         raise ValueError(f"No usable records found in {train_file}")
 
@@ -235,7 +329,11 @@ def main(cfg: Optional[DictConfig] = None, overrides: Optional[Sequence[str]] = 
 
     test_samples: List[Dict[str, str]] = []
     if test_file.exists():
-        test_samples = convert_records(load_jsonl_records(test_file))
+        test_samples = convert_records(
+            load_jsonl_records(test_file),
+            prompt_builder,
+            tokenizer,
+        )
 
     train_batch_size = get_train_batch_size(cfg.finetuning)
     batch_size = int(

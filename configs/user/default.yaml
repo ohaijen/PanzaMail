@@ -3,6 +3,7 @@ username: "abc"  # This identifies the user in the users directory and the names
 hardware: "mlx"
 
 data_dir: ${panza_workspace}/data
+personal_data_dir: "/Users/{username}/Documents"
 
 system_preamble_path: ${panza_workspace}/prompt_preambles/system_preamble.txt
 user_preamble_path: ${panza_workspace}/prompt_preambles/user_preamble.txt

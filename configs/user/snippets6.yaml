@@ -3,6 +3,7 @@ username: "snippets6"  # This identifies the user in the users directory and the
 hardware: mlx # or CUDA
 
 data_dir: ${panza_workspace}/data/snippets6
+personal_data_dir: "/Users/{username}/Documents"
 
 system_preamble_path: ${panza_workspace}/prompt_preambles/summarized_snippet_system_preamble.txt
 pre_personalization_system_preamble_path: ${panza_workspace}/prompt_preambles/pre_personalization_system_preamble.txt

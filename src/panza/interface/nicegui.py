@@ -4,6 +4,7 @@ import asyncio
 import difflib
 import html
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple
@@ -54,6 +55,7 @@ class PanzaNiceGUI:
         port: int = 8080,
         username: str | None = None,
         training_data_path: str | None = None,
+        personal_data_dir: str | None = None,
     ):
         self.writer = writer
         self.pre_personalization_writer = assistant
@@ -94,8 +96,9 @@ class PanzaNiceGUI:
         self.review_decision_filter: Optional[str] = None
         self.prepare_data_button = None
         self.prepare_data_status_label = None
+        self.personal_data_dir = personal_data_dir or "/Users/{username}/Documents"
 
-        self.file_selector_root = Path("/Users/jen/Downloads/")
+        self.file_selector_root = Path(self.personal_data_dir)
         if not self.file_selector_root.exists():
             self.file_selector_root = self._repo_root()
         self.file_tree_container = None
@@ -125,6 +128,7 @@ class PanzaNiceGUI:
         self.train_learning_rate_input = None
         self.train_epochs_input = None
         self.train_batch_size_input = None
+        self.training_widgets: List[Dict[str, Any]] = []
         self.train_model_running = False
 
         self.eval_file_input = None
@@ -208,11 +212,15 @@ class PanzaNiceGUI:
             if eval_file.exists():
                 return eval_file
 
-        # Fallback to first available model evaluation file
-        for model_path in self._find_available_models():
-            fallback_eval = model_path / "professor_prompts_filled_outputs.json"
-            if fallback_eval.exists():
-                return fallback_eval
+        username = self._find_user_name()
+        if os.path.exists(self._repo_root() / "data" / username / "professor_prompts_filled_outputs.json"):
+            return self._repo_root() / "data" / username / "professor_prompts_filled_outputs.json"
+
+        # # Fallback to first available model evaluation file
+        # for model_path in self._find_available_models():
+        #     fallback_eval = model_path / "professor_prompts_filled_outputs.json"
+        #     if fallback_eval.exists():
+        #         return fallback_eval
 
         return None
 
@@ -228,16 +236,24 @@ class PanzaNiceGUI:
         return None
 
     def _find_available_models(self) -> List[Path]:
+        current_model = self.writer.llm.checkpoint
+        username = self._find_user_name()
+        print("THE CURRENT MODEL IS", current_model)
+        if username in current_model:
+            models = []
+        else:
+            models = [Path(current_model)]
+
+        # Find all models trained for the user.
         model_root = self._repo_root() / "checkpoints" / "models"
         if not model_root.exists():
             return []
-        username = self._find_user_name()
-        models = []
         for path in sorted(model_root.iterdir()):
             if not path.is_dir():
                 continue
             if username is None or username in path.name:
                 models.append(path)
+
         return models
 
     def _find_current_model_dir(self) -> Optional[Path]:
@@ -369,6 +385,7 @@ class PanzaNiceGUI:
                 "**No models were found in `checkpoints/models`." \
                 " Ensure your model directories are present and your username matches the model name.**"
             )
+        self._build_training_widget()
 
     def _build_inference_tab(self) -> None:
         self.prompt_input = ui.input(
@@ -404,42 +421,7 @@ class PanzaNiceGUI:
 
     def _build_training_data_tab(self) -> None:
         display_path = str(self.training_data_path or "")
-        (
-            default_model_name,
-            default_learning_rate,
-            default_epochs,
-            default_train_batch_size,
-        ) = self._default_training_hyperparameters()
-        with ui.row().classes("w-full gap-4 items-end flex-wrap").style(
-            "margin-bottom: 16px;"
-        ):
-            self.train_model_name_input = ui.input(
-                label="Model name or path",
-                value=default_model_name,
-            ).style("width: 420px; max-width: 100%;")
-            self.train_learning_rate_input = ui.input(
-                label="Learning rate",
-                value=default_learning_rate,
-            ).style("width: 180px;")
-            self.train_epochs_input = ui.number(
-                label="Epochs",
-                value=default_epochs,
-                min=1,
-                precision=0,
-                step=1,
-            ).style("width: 140px;")
-            self.train_batch_size_input = ui.number(
-                label="Train batch size",
-                value=default_train_batch_size,
-                min=1,
-                precision=0,
-                step=1,
-            ).style("width: 160px;")
-            self.train_model_button = ui.button(
-                "Train model",
-                on_click=self._train_model,
-            ).props("color=primary")
-            self.train_model_status_label = ui.label("").classes("text-sm text-gray-600")
+        self._build_training_widget()
 
         ui.label(f"File: {display_path or 'No training data file resolved.'}").classes(
             "text-sm text-gray-600"
@@ -457,10 +439,83 @@ class PanzaNiceGUI:
         self.training_data_records_container = ui.column().classes("w-full gap-4")
         self._load_training_data()
 
+    def _build_training_widget(self) -> Dict[str, Any]:
+        (
+            default_model_name,
+            default_learning_rate,
+            default_epochs,
+            default_train_batch_size,
+        ) = self._default_training_hyperparameters()
+        training_widget: Dict[str, Any] = {}
+
+        async def train_click() -> None:
+            await self._train_model(training_widget)
+
+        with ui.row().classes("w-full gap-4 items-end flex-wrap").style(
+            "margin-bottom: 16px;"
+        ):
+            training_widget["model_name_input"] = ui.input(
+                label="Model name or path",
+                value=default_model_name,
+            ).style("width: 420px; max-width: 100%;")
+            training_widget["learning_rate_input"] = ui.input(
+                label="Learning rate",
+                value=default_learning_rate,
+            ).style("width: 180px;")
+            training_widget["epochs_input"] = ui.number(
+                label="Epochs",
+                value=default_epochs,
+                min=1,
+                precision=0,
+                step=1,
+            ).style("width: 140px;")
+            training_widget["batch_size_input"] = ui.number(
+                label="Train batch size",
+                value=default_train_batch_size,
+                min=1,
+                precision=0,
+                step=1,
+            ).style("width: 160px;")
+            training_widget["button"] = ui.button(
+                "Train model",
+                on_click=train_click,
+            ).props("color=primary")
+            training_widget["status_label"] = ui.label("").classes(
+                "text-sm text-gray-600"
+            )
+
+        self.training_widgets.append(training_widget)
+        self.train_model_name_input = training_widget["model_name_input"]
+        self.train_learning_rate_input = training_widget["learning_rate_input"]
+        self.train_epochs_input = training_widget["epochs_input"]
+        self.train_batch_size_input = training_widget["batch_size_input"]
+        self.train_model_button = training_widget["button"]
+        self.train_model_status_label = training_widget["status_label"]
+        return training_widget
+
     def _set_train_model_status(self, status: str) -> None:
-        if self.train_model_status_label is not None:
-            self.train_model_status_label.text = status
-            self.train_model_status_label.update()
+        status_labels = [
+            widget.get("status_label")
+            for widget in self.training_widgets
+            if widget.get("status_label") is not None
+        ]
+        if not status_labels and self.train_model_status_label is not None:
+            status_labels.append(self.train_model_status_label)
+        for status_label in status_labels:
+            status_label.text = status
+            status_label.update()
+
+    def _set_train_model_buttons_enabled(self, enabled: bool) -> None:
+        buttons = [
+            widget.get("button")
+            for widget in self.training_widgets
+            if widget.get("button") is not None
+        ]
+        if not buttons and self.train_model_button is not None:
+            buttons.append(self.train_model_button)
+        for button in buttons:
+            button.enabled = enabled
+            button.update()
 
     def _load_train_lora_mlx_module(self):
         import importlib
@@ -508,7 +563,9 @@ class PanzaNiceGUI:
         try:
             from omegaconf import OmegaConf
 
-            cfg = OmegaConf.load(self._repo_root() / "configs" / "finetuning" / "lora.yaml")
+            cfg = OmegaConf.load(
+                self._repo_root() / "configs" / "finetuning" / "lora.yaml"
+            )
             model_name = str(
                 cfg.get("model_name_or_path", DEFAULT_TRAINING_MODEL_NAME_OR_PATH)
             ).strip()
@@ -539,25 +596,48 @@ class PanzaNiceGUI:
                 DEFAULT_TRAINING_BATCH_SIZE,
             )
 
-    def _training_hyperparameter_overrides(self) -> Tuple[List[str], str, str, str, int]:
+    def _training_hyperparameter_overrides(
+        self,
+        training_widget: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[List[str], str, str, str, int]:
+        model_name_input = (
+            training_widget.get("model_name_input")
+            if training_widget is not None
+            else self.train_model_name_input
+        )
+        learning_rate_input = (
+            training_widget.get("learning_rate_input")
+            if training_widget is not None
+            else self.train_learning_rate_input
+        )
+        epochs_input = (
+            training_widget.get("epochs_input")
+            if training_widget is not None
+            else self.train_epochs_input
+        )
+        batch_size_input = (
+            training_widget.get("batch_size_input")
+            if training_widget is not None
+            else self.train_batch_size_input
+        )
         raw_model_name = (
-            self.train_model_name_input.value
-            if self.train_model_name_input is not None
+            model_name_input.value
+            if model_name_input is not None
             else DEFAULT_TRAINING_MODEL_NAME_OR_PATH
         )
         raw_learning_rate = (
-            self.train_learning_rate_input.value
-            if self.train_learning_rate_input is not None
+            learning_rate_input.value
+            if learning_rate_input is not None
             else DEFAULT_TRAINING_LEARNING_RATE
         )
         raw_epochs = (
-            self.train_epochs_input.value
-            if self.train_epochs_input is not None
+            epochs_input.value
+            if epochs_input is not None
             else DEFAULT_TRAINING_EPOCHS
         )
         raw_train_batch_size = (
-            self.train_batch_size_input.value
-            if self.train_batch_size_input is not None
+            batch_size_input.value
+            if batch_size_input is not None
             else DEFAULT_TRAINING_BATCH_SIZE
         )
 
@@ -613,34 +693,37 @@ class PanzaNiceGUI:
         train_lora_hf = self._load_train_lora_hf_module()
         train_lora_hf.main(cfg)
 
-    async def _train_model(self) -> None:
+    async def _train_model(
+        self,
+        training_widget: Optional[Dict[str, Any]] = None,
+    ) -> None:
         if self.train_model_running:
             self._set_train_model_status("Training is already running.")
             return
 
         print("trying to train model")
         self.train_model_running = True
-        if self.train_model_button is not None:
-            self.train_model_button.enabled = False
-            self.train_model_button.update()
+        self._set_train_model_buttons_enabled(False)
 
         self._set_train_model_status("Preparing training job...")
         await asyncio.sleep(0)
 
         try:
             hyperparameter_overrides, model_name, learning_rate, epochs, train_batch_size = (
-                self._training_hyperparameter_overrides()
+                self._training_hyperparameter_overrides(training_widget)
             )
             cfg = self._compose_train_lora_mlx_config(hyperparameter_overrides)
             hardware = str(cfg.user.get("hardware", "")).lower().strip()
             if hardware == "mlx":
                 self._set_train_model_status(
-                    f"Training MLX LoRA model ({model_name}, lr={learning_rate}, epochs={epochs}, batch={train_batch_size})..."
+                    f"Training MLX LoRA model ({model_name}, lr={learning_rate}, "
+                    f"epochs={epochs}, batch={train_batch_size})..."
                 )
                 await asyncio.to_thread(self._run_train_lora_mlx, cfg)
             elif hardware == "cuda":
                 self._set_train_model_status(
-                    f"Training CUDA LoRA model ({model_name}, lr={learning_rate}, epochs={epochs}, batch={train_batch_size})..."
+                    f"Training CUDA LoRA model ({model_name}, lr={learning_rate}, "
+                    f"epochs={epochs}, batch={train_batch_size})..."
                 )
                 await asyncio.to_thread(self._run_train_lora_hf, cfg)
             else:
@@ -656,9 +739,7 @@ class PanzaNiceGUI:
             return
         finally:
             self.train_model_running = False
-            if self.train_model_button is not None:
-                self.train_model_button.enabled = True
-                self.train_model_button.update()
+            self._set_train_model_buttons_enabled(True)
 
         self.available_models = self._find_available_models()
         if self.model_selector is not None:

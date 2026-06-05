@@ -8,6 +8,7 @@ defaults:
 
 _target_: panza.interface.PanzaNiceGUI
 
+# This would be the custom trained model, once available.
 assistant: 
   llm:
     #checkpoint:  "Qwen/Qwen3.5-4B"
@@ -23,3 +24,4 @@ port: 8080
 username: ${user.username}
 use_pre_personalization_model: true
 training_data_path: ${user.data_dir}/train.jsonl
+personal_data_dir: ${user.personal_data_dir}
