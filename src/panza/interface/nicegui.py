@@ -386,7 +386,7 @@ class PanzaNiceGUI:
 
         with ui.tabs().classes("w-full") as tabs:
             self.tabs = tabs
-            self.review_tab = ui.tab("Add training data")
+            self.review_tab = ui.tab("Collect document snippets")
             training_data_tab = ui.tab("Training data")
             inference_tab = ui.tab("Inference")
             automated_evaluation_tab = ui.tab("Automated evaluation")
@@ -1215,7 +1215,7 @@ class PanzaNiceGUI:
         self._load_snippet_tool_state()
         with ui.row().classes("w-full gap-4 items-center").style("margin-bottom: 16px;"):
             self.prepare_data_button = ui.button(
-                "Prepare training data",
+                "Convert to training data",
                 on_click=self._prepare_training_data,
             ).props("color=primary")
             self.prepare_data_status_label = ui.label("").classes("text-sm text-gray-600")
