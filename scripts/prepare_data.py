@@ -118,7 +118,7 @@ def main(cfg: Optional[DictConfig] = None, overrides: Optional[Sequence[str]] = 
 
     # Load documents
     documents = load_documents(cfg.cleaned_emails_path)
-    num_cycles = 2
+    num_cycles = 1
     for cycle_num in range(num_cycles):
         for document in documents:
             document.snippet_text = document.original_text

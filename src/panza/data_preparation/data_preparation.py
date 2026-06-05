@@ -28,8 +28,6 @@ def load_documents(data_path: str) -> None:
     with open(data_path, "r") as f:
         lines = f.readlines()
 
-    print(lines)
-    print("DATA_PATH", data_path)
     documents = [Snippet.deserialize(line.strip(",")) for line in lines]
     for document in documents:
         document.original_text = document.snippet_text
