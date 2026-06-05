@@ -2,7 +2,32 @@
   <img src="panza_logo.png" alt="panza demo" width="200"/>
 </div>
 
-#  Panza: A personal email assistant, trained and running on-device
+
+# Dogfood instructions
+
+First, clone this repo, and make sure you're on the other_data branch.
+
+Then, install your dependencies:
+
+### Updated environment.
+We tested Panza using python 3.10 and 3.13. Since Conda is now "discouraged", here are the instructions with venv
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Then, Install the required packages:
+``` bash
+pip install ".[training]"
+```
+
+Then, go ahead and load the UI:
+```
+PANZA_DEVICE=mlx HYDRA_FULL_ERROR=1 python runner.py user=[USER] interfaces=nicegui  interfaces.port=[PICK A PORT]
+```
+
+#  Panza: A personal assistant, trained and running on-device
 
 Train Panza on your own data for free with a Lightning Studios account here:
 <a target="_blank" href="https://lightning.ai/maddox-j/studios/panzamail-demo">
